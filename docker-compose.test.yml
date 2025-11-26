@@ -1,0 +1,17 @@
+services:
+  test-db:
+    image: postgres:15-alpine
+    container_name: gmail-agent-test-db
+    environment:
+      POSTGRES_DB: test_email_agent
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_password
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_user -d test_email_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    tmpfs:
+      - /var/lib/postgresql/data  # Use tmpfs for faster tests

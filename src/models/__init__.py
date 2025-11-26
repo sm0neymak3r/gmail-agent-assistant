@@ -1,6 +1,6 @@
 """Database models for Gmail Agent."""
 
-from src.models.base import Base, get_async_engine, get_async_session, get_sync_engine
+from src.models.base import Base, get_async_engine, get_async_session, get_sync_engine, get_sync_session
 from src.models.email import Email
 from src.models.checkpoint import Checkpoint
 from src.models.feedback import Feedback
@@ -13,6 +13,7 @@ __all__ = [
     "get_async_engine",
     "get_async_session",
     "get_sync_engine",
+    "get_sync_session",
     "Email",
     "Checkpoint",
     "Feedback",

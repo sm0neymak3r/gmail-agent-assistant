@@ -32,7 +32,11 @@ rich>=13.7.0
 tenacity>=8.2.0
 python-dotenv>=1.0.0
 
-# Development (optional)
+# Testing
 pytest>=7.4.0
 pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+pytest-mock>=3.12.0
 httpx>=0.26.0
+freezegun>=1.2.0
+testcontainers>=3.7.0
