@@ -43,6 +43,7 @@ Files are organized by concern:
 | `registry.tf` | Artifact Registry for Docker images |
 | `cloudrun.tf` | Cloud Run service configuration |
 | `scheduler.tf` | Cloud Scheduler for periodic jobs |
+| `tasks.tf` | Cloud Tasks queue for batch processing |
 | `monitoring.tf` | Logging, alerting, storage |
 | `outputs.tf` | Exposed values after deployment |
 
@@ -242,7 +243,6 @@ Common causes:
 ### Potential Enhancements
 
 - **Pub/Sub Integration**: For real-time Gmail push notifications
-- **Cloud Tasks**: For async processing queue
 - **Memorystore (Redis)**: For caching/rate limiting
 - **Cloud CDN**: If serving static assets
 

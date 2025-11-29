@@ -7,6 +7,7 @@ import os
 import json
 from dataclasses import dataclass
 from functools import lru_cache
+from urllib.parse import quote_plus
 
 
 @dataclass(frozen=True)
@@ -21,12 +22,14 @@ class DatabaseConfig:
     @property
     def connection_string(self) -> str:
         """SQLAlchemy async connection string."""
-        return f"postgresql+asyncpg://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+        encoded_password = quote_plus(self.password)
+        return f"postgresql+asyncpg://{self.user}:{encoded_password}@{self.host}:{self.port}/{self.name}"
 
     @property
     def sync_connection_string(self) -> str:
         """SQLAlchemy sync connection string (for CLI/migrations)."""
-        return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+        encoded_password = quote_plus(self.password)
+        return f"postgresql://{self.user}:{encoded_password}@{self.host}:{self.port}/{self.name}"
 
 
 @dataclass(frozen=True)

@@ -1,5 +1,11 @@
 # LangGraph Multi-Agent Workflow
 
+This document describes the email processing workflow. **Phase 1 is currently implemented**; Phase 2/3 are planned future work.
+
+## Phase 1: Current Implementation
+
+The Phase 1 workflow handles email categorization with confidence-based routing:
+
 ```mermaid
 flowchart LR
     subgraph Input["Input"]
@@ -9,16 +15,107 @@ flowchart LR
 
     subgraph Categorization["Categorization Layer"]
         CAT[Categorization Agent<br/>Claude Haiku]
-        CAT_CHECK{Confidence?}
-        CAT_ESCALATE[Re-categorize<br/>Claude Sonnet]
-        CAT_QUEUE[(Human Approval<br/>Queue)]
+        CAT_CHECK{Confidence<br/>≥0.7?}
+        CAT_ESCALATE[Re-classify<br/>Claude Sonnet]
     end
 
-    subgraph Importance["Importance Detection"]
+    subgraph Routing["Confidence Routing"]
+        ROUTE{Confidence<br/>≥0.8?}
+    end
+
+    subgraph Output["Output"]
+        LABEL[Apply Gmail Label<br/>Agent/{Category}]
+        QUEUE[(Human Approval<br/>Queue)]
+        DONE([End])
+    end
+
+    subgraph ErrorHandling["Error Handling"]
+        RETRY[[Retry Queue<br/>3x max]]
+        DLQ[(Dead Letter<br/>Queue)]
+    end
+
+    %% Main Flow
+    START --> FETCH
+    FETCH --> CAT
+
+    %% Categorization with Escalation
+    CAT --> CAT_CHECK
+    CAT_CHECK -->|"≥0.7"| ROUTE
+    CAT_CHECK -->|"<0.7"| CAT_ESCALATE
+    CAT_ESCALATE --> ROUTE
+
+    %% Confidence-based Routing
+    ROUTE -->|"≥0.8"| LABEL
+    ROUTE -->|"<0.8"| QUEUE
+
+    %% Output
+    LABEL --> DONE
+    QUEUE -.->|"After Approval"| LABEL
+
+    %% Error Paths
+    CAT -.->|"Error"| RETRY
+    RETRY -.->|"3 failures"| DLQ
+
+    %% Styling
+    classDef agent fill:#4285F4,stroke:#1967D2,color:#fff
+    classDef decision fill:#FBBC04,stroke:#F9AB00,color:#000
+    classDef queue fill:#9334E6,stroke:#7627BB,color:#fff
+    classDef output fill:#34A853,stroke:#1E8E3E,color:#fff
+    classDef error fill:#EA4335,stroke:#C5221F,color:#fff
+
+    class FETCH,CAT,CAT_ESCALATE,LABEL agent
+    class CAT_CHECK,ROUTE decision
+    class QUEUE,DLQ queue
+    class START,DONE output
+    class RETRY error
+```
+
+### Phase 1 Workflow Steps
+
+1. **Email Fetch**: Gmail API fetches batch of unread emails (max 100)
+2. **Categorization**: Claude Haiku classifies into one of 8 categories
+3. **Escalation**: If confidence < 0.7, re-classify with Claude Sonnet
+4. **Routing**: Based on final confidence:
+   - ≥0.8: Auto-apply Gmail label
+   - <0.8: Queue for human approval
+5. **Labeling**: Apply `Agent/{Category}` label in Gmail
+
+### Code Reference
+
+```python
+# src/workflows/email_processor.py:256-294
+def create_workflow() -> StateGraph:
+    workflow = StateGraph(EmailState)
+
+    # Nodes
+    workflow.add_node("categorize", categorize_email)
+    workflow.add_node("apply_label", apply_label_node)
+    workflow.add_node("queue_approval", queue_approval_node)
+
+    # Routing
+    workflow.add_edge(START, "categorize")
+    workflow.add_conditional_edges(
+        "categorize",
+        route_after_categorization,
+        {"apply_label": "apply_label", "queue_approval": "queue_approval"}
+    )
+    workflow.add_edge("apply_label", END)
+    workflow.add_edge("queue_approval", END)
+
+    return workflow.compile()
+```
+
+---
+
+## Phase 2: Planned Features (Future)
+
+```mermaid
+flowchart LR
+    subgraph Phase2["Phase 2 Additions"]
         IMP[Importance Agent<br/>Claude Haiku]
         IMP_CHECK{Score?}
-        IMP_CRITICAL[Critical >0.9<br/>Extract Actions]
-        IMP_HIGH[High 0.7-0.9<br/>Extract Actions]
+        IMP_CRITICAL[Critical >0.9]
+        IMP_HIGH[High 0.7-0.9]
         IMP_NORMAL[Normal 0.4-0.7]
         IMP_LOW[Low <0.4]
     end
@@ -29,164 +126,123 @@ flowchart LR
 
     subgraph Calendar["Calendar Processing"]
         CAL[Calendar Agent<br/>Claude Sonnet]
-        CAL_CHECK{Confidence<br/>≥0.85?}
         CAL_QUEUE[(Calendar<br/>Approval Queue)]
     end
 
     subgraph Unsubscribe["Unsubscribe Management"]
         UNSUB[Unsubscribe Agent<br/>Claude Haiku]
-        UNSUB_CHECK{RFC 8058<br/>Compliant?}
         UNSUB_BATCH[(Batch<br/>Recommendations)]
     end
 
-    subgraph Knowledge["Knowledge Management"]
-        OBS[Obsidian Agent<br/>Claude Haiku]
-        OBS_CHECK{Existing<br/>Note?}
-        OBS_NEW[Create New Note]
-        OBS_APPEND[Append to Note]
-    end
-
-    subgraph Reply["Reply Generation"]
-        REP_CHECK{Importance<br/>≥High?}
-        REP[Reply Agent<br/>Claude Sonnet]
-        REP_SKIP[Skip Draft]
-    end
-
-    subgraph Output["Output"]
-        LABEL[Gmail Labeler<br/>Apply Labels]
-        DONE([End])
-    end
-
-    subgraph ErrorHandling["Error Handling"]
-        RETRY[[Retry Queue<br/>Exponential Backoff]]
-        DLQ[(Dead Letter<br/>Queue)]
-    end
-
-    %% Main Flow
-    START --> FETCH
-    FETCH --> CAT
-
-    %% Categorization Logic
-    CAT --> CAT_CHECK
-    CAT_CHECK -->|"≥0.8"| IMP
-    CAT_CHECK -->|"0.7-0.8"| CAT_QUEUE
-    CAT_CHECK -->|"<0.7"| CAT_ESCALATE
-    CAT_ESCALATE --> CAT_CHECK
-    CAT_QUEUE -.->|"After Approval"| IMP
-
-    %% Importance Detection
+    %% Phase 2 Flow (after categorization)
     IMP --> IMP_CHECK
     IMP_CHECK -->|">0.9"| IMP_CRITICAL
     IMP_CHECK -->|"0.7-0.9"| IMP_HIGH
     IMP_CHECK -->|"0.4-0.7"| IMP_NORMAL
     IMP_CHECK -->|"<0.4"| IMP_LOW
+
     IMP_CRITICAL --> ROUTE
     IMP_HIGH --> ROUTE
     IMP_NORMAL --> ROUTE
     IMP_LOW --> ROUTE
 
-    %% Router Logic
-    ROUTE -->|"meeting, appointment,<br/>reservation, flight, hotel"| CAL
-    ROUTE -->|"List-Unsubscribe<br/>header present"| UNSUB
-    ROUTE -->|"Default"| OBS
+    ROUTE -->|"meeting, appointment"| CAL
+    ROUTE -->|"List-Unsubscribe"| UNSUB
 
-    %% Calendar Processing
-    CAL --> CAL_CHECK
-    CAL_CHECK -->|"Yes"| OBS
-    CAL_CHECK -->|"No"| CAL_QUEUE
-    CAL_QUEUE -.->|"After Approval"| OBS
+    CAL --> CAL_QUEUE
+    UNSUB --> UNSUB_BATCH
 
-    %% Unsubscribe Processing
-    UNSUB --> UNSUB_CHECK
-    UNSUB_CHECK -->|"Yes"| UNSUB_BATCH
-    UNSUB_CHECK -->|"No"| OBS
-    UNSUB_BATCH -.->|"After Batch<br/>Approval"| OBS
+    %% Styling
+    classDef agent fill:#4285F4,stroke:#1967D2,color:#fff
+    classDef decision fill:#FBBC04,stroke:#F9AB00,color:#000
+    classDef queue fill:#9334E6,stroke:#7627BB,color:#fff
+    classDef importance fill:#FF6D01,stroke:#E65100,color:#fff
+    classDef future fill:#78909C,stroke:#546E7A,color:#fff
 
-    %% Obsidian Processing
+    class IMP,CAL,UNSUB agent
+    class IMP_CHECK,ROUTE decision
+    class CAL_QUEUE,UNSUB_BATCH queue
+    class IMP_CRITICAL,IMP_HIGH,IMP_NORMAL,IMP_LOW importance
+```
+
+---
+
+## Phase 3: Planned Features (Future)
+
+```mermaid
+flowchart LR
+    subgraph Phase3["Phase 3 Additions"]
+        OBS[Obsidian Agent<br/>Claude Haiku]
+        OBS_CHECK{Existing<br/>Note?}
+        OBS_NEW[Create New Note]
+        OBS_APPEND[Append to Note]
+
+        REP_CHECK{Importance<br/>≥High?}
+        REP[Reply Agent<br/>Claude Sonnet]
+        REP_SKIP[Skip Draft]
+    end
+
     OBS --> OBS_CHECK
     OBS_CHECK -->|"Yes"| OBS_APPEND
     OBS_CHECK -->|"No"| OBS_NEW
     OBS_APPEND --> REP_CHECK
     OBS_NEW --> REP_CHECK
 
-    %% Reply Generation
     REP_CHECK -->|"Yes"| REP
     REP_CHECK -->|"No"| REP_SKIP
-    REP --> LABEL
-    REP_SKIP --> LABEL
-
-    %% Final Output
-    LABEL --> DONE
-
-    %% Error Paths
-    CAT -.->|"Error"| RETRY
-    IMP -.->|"Error"| RETRY
-    CAL -.->|"Error"| RETRY
-    OBS -.->|"Error"| RETRY
-    RETRY -.->|"3 failures"| DLQ
 
     %% Styling
     classDef agent fill:#4285F4,stroke:#1967D2,color:#fff
     classDef decision fill:#FBBC04,stroke:#F9AB00,color:#000
-    classDef queue fill:#9334E6,stroke:#7627BB,color:#fff
-    classDef output fill:#34A853,stroke:#1E8E3E,color:#fff
-    classDef error fill:#EA4335,stroke:#C5221F,color:#fff
-    classDef importance fill:#FF6D01,stroke:#E65100,color:#fff
+    classDef future fill:#78909C,stroke:#546E7A,color:#fff
 
-    class FETCH,CAT,CAT_ESCALATE,IMP,CAL,UNSUB,OBS,REP,LABEL agent
-    class CAT_CHECK,IMP_CHECK,ROUTE,CAL_CHECK,UNSUB_CHECK,OBS_CHECK,REP_CHECK decision
-    class CAT_QUEUE,CAL_QUEUE,UNSUB_BATCH,DLQ queue
-    class START,DONE output
-    class RETRY error
-    class IMP_CRITICAL,IMP_HIGH,IMP_NORMAL,IMP_LOW importance
+    class OBS,REP agent
+    class OBS_CHECK,REP_CHECK decision
+    class OBS_NEW,OBS_APPEND,REP_SKIP future
 ```
+
+---
 
 ## Model Selection Strategy
 
-| Agent | Primary Model | Escalation Model | Rationale |
-|-------|---------------|------------------|-----------|
-| Categorization | Claude Haiku | Claude Sonnet | Cost optimization; escalate ambiguous cases |
-| Importance | Claude Haiku | - | Keyword matching + scoring is straightforward |
-| Calendar | Claude Sonnet | - | Date/time parsing needs balanced accuracy |
-| Unsubscribe | Claude Haiku | - | Header parsing is deterministic |
-| Obsidian | Claude Haiku | - | Note creation is templated |
-| Reply | Claude Sonnet | - | Quality matters most for user-facing content |
+| Agent | Primary Model | Escalation Model | Status |
+|-------|---------------|------------------|--------|
+| Categorization | Claude Haiku | Claude Sonnet | ✅ Phase 1 |
+| Importance | Claude Haiku | - | 📋 Phase 2 |
+| Calendar | Claude Sonnet | - | 📋 Phase 2 |
+| Unsubscribe | Claude Haiku | - | 📋 Phase 2 |
+| Obsidian | Claude Haiku | - | 📋 Phase 3 |
+| Reply | Claude Sonnet | - | 📋 Phase 3 |
 
-## Human Approval Triggers
+## Human Approval Triggers (Phase 1)
 
 | Queue | Trigger Condition | Expected Volume |
 |-------|-------------------|-----------------|
 | Categorization | Confidence < 0.8 | ~10-15% of emails |
-| Calendar | Confidence < 0.85 | ~5% of calendar emails |
-| Unsubscribe | Batch review | Weekly batch |
 
-## Importance Detection Factors
+## Confidence Thresholds
 
 ```
-Score = Σ(factor_weight × factor_present)
+Escalation threshold: 0.7
+- Below 0.7: Escalate from Haiku → Sonnet
 
-Factors:
-- interview_keywords: 0.3 (job, interview, offer, candidate)
-- deadline_mentions: 0.25 (due, deadline, by EOD, ASAP)
-- financial_amounts: 0.2 ($, invoice, payment, refund)
-- sender_authority: 0.15 (VIP list, manager, executive domain)
-- urgency_indicators: 0.1 (urgent, important, action required)
+Auto-label threshold: 0.8
+- ≥0.8: Auto-apply Gmail label
+- <0.8: Queue for human approval
 ```
 
-## Processing Characteristics
+## Processing Characteristics (Phase 1)
 
 | Characteristic | Type | Details |
 |----------------|------|---------|
-| Fetch → Categorize | Sequential | Each email must be categorized before importance |
-| Importance factors | Parallel | All 5 factors evaluated simultaneously |
-| Router branches | Exclusive | Only one path taken per email |
-| Calendar + Obsidian | Sequential | Calendar must complete before Obsidian |
-| Error retry | Async | Failed emails retry independently |
+| Batch fetch | Sequential | Fetch up to 100 messages per run |
+| Idempotency | Check | Skip if message_id already in database |
+| Categorization | Sequential | Each email processed individually |
+| Error handling | Retry 3x | Exponential backoff on failures |
 
-## Checkpoint Recovery Points
+## Checkpoint Recovery Points (Phase 1)
 
-1. **After Fetch**: Email IDs stored in state
-2. **After Categorization**: Category + confidence persisted
-3. **After Importance**: Score + action items persisted
-4. **After each agent**: Full state snapshot to PostgreSQL
-5. **Human approval queues**: Separate persistence with TTL
+1. **After Fetch**: Email record created in database with status `processing`
+2. **After Categorization**: Category + confidence stored in email record
+3. **After Labeling**: Status updated to `labeled` or `pending_approval`
+4. **Checkpoint saved**: Full state snapshot in `checkpoints` table

@@ -1,3 +1,8 @@
+# Get project information (for project number)
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
 # Placeholder Cloud Run service
 resource "google_cloud_run_v2_service" "main" {
   name     = "gmail-agent-${var.environment}"
@@ -13,8 +18,7 @@ resource "google_cloud_run_v2_service" "main" {
     }
 
     containers {
-      # Initially use a simple hello-world image
-      image = "gcr.io/cloudrun/hello"
+      image = var.cloudrun_image
 
       resources {
         limits = {
@@ -90,6 +94,31 @@ resource "google_cloud_run_v2_service" "main" {
             version = "latest"
           }
         }
+      }
+
+      # Cloud Tasks configuration for batch processing
+      env {
+        name  = "CLOUD_TASKS_QUEUE"
+        value = google_cloud_tasks_queue.batch.id
+      }
+
+      # SERVICE_URL is constructed at runtime from K_SERVICE env var
+      # Cloud Run automatically provides K_SERVICE with the service name
+      # The application constructs the full URL from this
+
+      env {
+        name  = "SERVICE_ACCOUNT_EMAIL"
+        value = "email-agent-runtime@${var.project_id}.iam.gserviceaccount.com"
+      }
+
+      env {
+        name  = "REGION"
+        value = var.region
+      }
+
+      env {
+        name  = "PROJECT_NUMBER"
+        value = data.google_project.current.number
       }
     }
 

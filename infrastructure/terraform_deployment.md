@@ -14,14 +14,14 @@ sequenceDiagram
 
     Note over TF,MON: Phase 1: Network Foundation (Sequential due to dependencies)
 
-    TF->>NET: google_compute_network<br/>"gmail-agent-vpc-{env}"
+    TF->>NET: google_compute_network<br/>"gmail-agent-vpc-ENV"
     NET-->>TF: VPC created
 
     par Subnet & Addresses
-        TF->>NET: google_compute_subnetwork<br/>"cloudrun-subnet-{env}"
+        TF->>NET: google_compute_subnetwork<br/>"cloudrun-subnet-ENV"
         NET-->>TF: Subnet created
     and
-        TF->>NET: google_compute_global_address<br/>"sql-private-ip-{env}"
+        TF->>NET: google_compute_global_address<br/>"sql-private-ip-ENV"
         NET-->>TF: Private IP range reserved
     end
 
@@ -29,21 +29,21 @@ sequenceDiagram
     NET-->>TF: Peering established
 
     par VPC Connector & NAT
-        TF->>NET: google_vpc_access_connector<br/>"gmail-agent-connector-{env}"
+        TF->>NET: google_vpc_access_connector<br/>"gmail-agent-connector-ENV"
         NET-->>TF: Connector ready
     and
-        TF->>NET: google_compute_router<br/>"gmail-agent-router-{env}"
+        TF->>NET: google_compute_router<br/>"gmail-agent-router-ENV"
         NET-->>TF: Router created
-        TF->>NET: google_compute_router_nat<br/>"gmail-agent-nat-{env}"
+        TF->>NET: google_compute_router_nat<br/>"gmail-agent-nat-ENV"
         NET-->>TF: NAT configured
     end
 
     Note over TF,MON: Phase 2: Secrets (Parallel)
 
     par Terraform-Managed Secrets
-        TF->>SM: google_secret_manager_secret<br/>"anthropic-api-key-{env}"
+        TF->>SM: google_secret_manager_secret<br/>"anthropic-api-key-ENV"
         SM-->>TF: Secret created
-        TF->>SM: google_secret_manager_secret<br/>"db-password-{env}"
+        TF->>SM: google_secret_manager_secret<br/>"db-password-ENV"
         SM-->>TF: Secret created
         TF->>SM: google_secret_manager_secret_version<br/>(auto-generated password)
         SM-->>TF: Version created
@@ -62,14 +62,14 @@ sequenceDiagram
     Note over TF,MON: Phase 4: Data Layer (Parallel - SQL takes ~12min)
 
     par Cloud SQL (Bottleneck)
-        TF->>SQL: google_sql_database_instance<br/>"gmail-agent-db-{env}" POSTGRES_15
+        TF->>SQL: google_sql_database_instance<br/>"gmail-agent-db-ENV" POSTGRES_15
         SQL-->>TF: Instance created (~12min)
         TF->>SQL: google_sql_database<br/>"email_agent"
         SQL-->>TF: Database created
         TF->>SQL: google_sql_user<br/>"agent_user"
         SQL-->>TF: User created
     and Artifact Registry
-        TF->>AR: google_artifact_registry_repository<br/>"gmail-agent-{env}" DOCKER
+        TF->>AR: google_artifact_registry_repository<br/>"gmail-agent-ENV" DOCKER
         AR-->>TF: Repository created
         TF->>AR: google_artifact_registry_repository_iam_member<br/>Reader access for runtime SA
         AR-->>TF: Access granted
@@ -77,19 +77,19 @@ sequenceDiagram
 
     Note over TF,MON: Phase 5: Bastion Host (Parallel with SQL)
 
-    TF->>GCE: google_service_account<br/>"bastion-{env}"
+    TF->>GCE: google_service_account<br/>"bastion-ENV"
     GCE-->>TF: SA created
 
     TF->>SM: google_secret_manager_secret_iam_member<br/>db-password → bastion SA
     SM-->>TF: Access granted
 
     par Bastion & Firewall
-        TF->>GCE: google_compute_instance<br/>"gmail-agent-bastion-{env}"
+        TF->>GCE: google_compute_instance<br/>"gmail-agent-bastion-ENV"
         GCE-->>TF: Instance created
     and
-        TF->>NET: google_compute_firewall<br/>"allow-iap-ssh-{env}"
+        TF->>NET: google_compute_firewall<br/>"allow-iap-ssh-ENV"
         NET-->>TF: IAP SSH rule created
-        TF->>NET: google_compute_firewall<br/>"allow-bastion-sql-{env}"
+        TF->>NET: google_compute_firewall<br/>"allow-bastion-sql-ENV"
         NET-->>TF: SQL access rule created
     end
 
@@ -100,26 +100,39 @@ sequenceDiagram
 
     Note over TF,MON: Phase 7: Compute (Depends on Network, Secrets, SQL)
 
-    TF->>CR: google_cloud_run_v2_service<br/>"gmail-agent-{env}"<br/>image: gcr.io/cloudrun/hello (placeholder)<br/>env: from SM<br/>vpc_connector: from NET<br/>service_account: email-agent-runtime
+    TF->>CR: google_cloud_run_v2_service<br/>"gmail-agent-ENV"<br/>image: gcr.io/cloudrun/hello (placeholder)<br/>env: from SM<br/>vpc_connector: from NET<br/>service_account: email-agent-runtime
     CR-->>TF: Service deployed
 
     TF->>CR: google_cloud_run_service_iam_member<br/>allUsers → roles/run.invoker
     CR-->>TF: Public access granted
 
-    Note over TF,MON: Phase 8: Scheduler (Depends on Cloud Run)
+    Note over TF,MON: Phase 8: Scheduler & Cloud Tasks (Depends on Cloud Run)
 
-    TF->>SCHED: google_cloud_scheduler_job<br/>"gmail-agent-processor-{env}"<br/>schedule: "0 * * * *"<br/>http_target: CR URI + /process<br/>oidc_token: email-agent-runtime
-    SCHED-->>TF: Job created
+    par Scheduler & Tasks
+        TF->>SCHED: google_cloud_scheduler_job<br/>"gmail-agent-processor-ENV"<br/>schedule: "0 * * * *"<br/>http_target: CR URI + /process<br/>oidc_token: email-agent-runtime
+        SCHED-->>TF: Job created
+    and
+        TF->>SCHED: google_cloud_tasks_queue<br/>"gmail-agent-batch-v3"<br/>max_concurrent: 1<br/>max_dispatches_per_second: 1
+        SCHED-->>TF: Queue created
+        TF->>SCHED: google_cloud_tasks_queue_iam_member<br/>enqueuer: email-agent-runtime
+        SCHED-->>TF: IAM binding created
+        TF->>CR: google_cloud_run_service_iam_member<br/>invoker: email-agent-runtime
+        CR-->>TF: IAM binding created
+    end
 
-    Note over TF,MON: Phase 9: Monitoring (Parallel, after Storage)
+    Note over TF,MON: Phase 9: Manual IAM for Cloud Tasks
+
+    Note right of TF: MANUAL STEP REQUIRED:<br/>Cloud Tasks service agent needs<br/>serviceAccountUser role on runtime SA<br/>(not managed by Terraform)
+
+    Note over TF,MON: Phase 10: Monitoring (Parallel, after Storage)
 
     par Log Storage
-        TF->>MON: google_storage_bucket<br/>"{project}-logs-{env}"
+        TF->>MON: google_storage_bucket<br/>"PROJECT-logs-ENV"
         MON-->>TF: Bucket created
     end
 
     par Log Sink & Alerts
-        TF->>MON: google_logging_project_sink<br/>"gmail-agent-archive-{env}"
+        TF->>MON: google_logging_project_sink<br/>"gmail-agent-archive-ENV"
         MON-->>TF: Sink created
         TF->>MON: google_storage_bucket_iam_member<br/>Writer access for sink
         MON-->>TF: Access granted
@@ -181,8 +194,11 @@ flowchart TD
         CR_IAM[cloud_run_service_iam_member]
     end
 
-    subgraph Phase7["Phase 7: Scheduler"]
+    subgraph Phase7["Phase 7: Scheduler & Cloud Tasks"]
         SCHED[google_cloud_scheduler_job]
+        TASKS[google_cloud_tasks_queue<br/>batch]
+        TASKS_IAM[cloud_tasks_queue_iam_member<br/>enqueuer]
+        TASKS_INVOKER[cloud_run_service_iam_member<br/>cloudtasks_invoker]
     end
 
     subgraph Phase8["Phase 8: Monitoring"]
@@ -235,6 +251,11 @@ flowchart TD
     %% Scheduler dependencies
     CR --> SCHED
 
+    %% Cloud Tasks dependencies
+    CR --> TASKS
+    TASKS --> TASKS_IAM
+    CR --> TASKS_INVOKER
+
     %% Monitoring dependencies
     BUCKET --> SINK
     SINK --> SINK_IAM
@@ -257,7 +278,7 @@ flowchart TD
     class SQL_INST,SQL_DB,SQL_USER,AR,AR_IAM data
     class BAST_SA,BAST_IAM,BAST,FW_IAP,FW_SQL bastion
     class CR,CR_IAM compute
-    class SCHED scheduler
+    class SCHED,TASKS,TASKS_IAM,TASKS_INVOKER scheduler
     class BUCKET,SINK,SINK_IAM,ALERT monitoring
 ```
 
@@ -275,10 +296,11 @@ flowchart TD
 | `bastion.tf` | 5 resources | Bastion host, SA, firewall rules |
 | `cloudrun.tf` | 2 resources | Cloud Run service + IAM |
 | `scheduler.tf` | 1 resource | Cloud Scheduler job |
+| `tasks.tf` | 4 resources | Cloud Tasks queue + IAM bindings |
 | `monitoring.tf` | 4 resources | Bucket, sink, sink IAM, alert |
-| `outputs.tf` | 7 outputs | Exposed values |
+| `outputs.tf` | 8 outputs | Exposed values (including cloud_tasks_queue) |
 
-**Total: ~34 resources**
+**Total: ~38 resources**
 
 ## Parallelization Opportunities
 
@@ -290,10 +312,13 @@ flowchart TD
 | 4 | Cloud SQL + Artifact Registry | Yes | **12min** (SQL bottleneck) |
 | 5 | Bastion host | Yes (parallel with SQL) | 1-2min |
 | 6 | Cloud Run | No (needs SQL, secrets) | 30-60s |
-| 7 | Scheduler | No (needs Cloud Run) | 5-10s |
-| 8 | Monitoring | Yes | 10-20s |
+| 7 | Scheduler + Cloud Tasks | Yes (both need Cloud Run) | 10-20s |
+| 8 | Manual: Cloud Tasks IAM | Manual | 1-2min |
+| 9 | Monitoring | Yes | 10-20s |
 
 **Total deployment time: ~12-15 minutes** (dominated by Cloud SQL provisioning)
+
+**Post-Deployment Manual Step:** Grant `serviceAccountUser` to Cloud Tasks service agent (see IAM section below)
 
 ## Key Differences from Standard Patterns
 
@@ -343,6 +368,30 @@ gmail-agent-{env} service:
 ```
 Uses email-agent-runtime SA for OIDC authentication to Cloud Run
 ```
+
+### Cloud Tasks (Manual Configuration Required)
+
+Cloud Tasks auto-dispatch requires a manual IAM binding not managed by Terraform:
+
+```bash
+# Get project number
+PROJECT_NUMBER=$(gcloud projects describe gmail-agent-prod --format='value(projectNumber)')
+
+# Grant serviceAccountUser to Cloud Tasks service agent
+gcloud iam service-accounts add-iam-policy-binding \
+  email-agent-runtime@gmail-agent-prod.iam.gserviceaccount.com \
+  --member="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-cloudtasks.iam.gserviceaccount.com" \
+  --role="roles/iam.serviceAccountUser"
+```
+
+**Why this is manual:** The Cloud Tasks service agent (`service-{PROJECT_NUMBER}@gcp-sa-cloudtasks.iam.gserviceaccount.com`) is created by Google when the Cloud Tasks API is enabled. Terraform doesn't have a data source to dynamically retrieve the project number at plan time, making this binding easier to manage via gcloud.
+
+**Why serviceAccountUser (not serviceAccountTokenCreator):** Cloud Tasks needs `iam.serviceAccounts.actAs` permission to generate OIDC tokens during auto-dispatch. This permission comes from `serviceAccountUser`. The `serviceAccountTokenCreator` role provides a different permission (`getOpenIdToken`) that Cloud Tasks doesn't use.
+
+| Role | Permission | Used by Cloud Tasks |
+|------|------------|---------------------|
+| `roles/iam.serviceAccountUser` | `iam.serviceAccounts.actAs` | ✅ Required |
+| `roles/iam.serviceAccountTokenCreator` | `iam.serviceAccounts.getOpenIdToken` | ❌ Not used |
 
 ## Rollback Considerations
 

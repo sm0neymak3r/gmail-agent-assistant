@@ -213,3 +213,47 @@ Before finishing a session, ensure:
 - [ ] New files follow project conventions
 - [ ] Documentation updated if needed
 - [ ] No secrets or credentials in code (use env vars)
+- [ ] **Diagrams updated** if workflow or data flow changed (see below)
+
+## Diagram Maintenance
+
+After any significant work session, verify that diagrams reflect the actual implementation.
+
+### Diagram Files
+
+| File | Contents | Update When |
+|------|----------|-------------|
+| `langgraph_workflow.md` | LangGraph workflow nodes and edges | Adding/removing agents, changing routing logic |
+| `data_flow_state.md` | Data flow, state transitions, database patterns | Changing database schema, state machine, transaction logic |
+| `categorization_hierarchy.md` | Email categories and classification | Adding/removing categories, changing thresholds |
+| `infrastructure/gcp_architecture.md` | GCP infrastructure diagram | Terraform changes |
+| `infrastructure/terraform_deployment.md` | Terraform deployment sequence | Adding/removing Terraform resources |
+
+### Phase Indicators
+
+All diagrams use phase indicators to distinguish implemented vs planned features:
+
+- **Phase 1** (✅): Currently implemented and tested
+- **Phase 2** (📋): Planned, not yet implemented
+- **Phase 3** (📋): Future enhancement
+
+When implementing Phase 2/3 features, move them from "planned" to "implemented" sections.
+
+### Keeping Diagrams in Sync
+
+1. **After adding a new agent**: Update `langgraph_workflow.md` workflow diagram
+2. **After changing categories**: Update `categorization_hierarchy.md` category list
+3. **After changing state machine**: Update `data_flow_state.md` state transitions
+4. **After Terraform changes**: Update `infrastructure/*.md` diagrams
+
+### Code References in Diagrams
+
+Include code references where helpful:
+```markdown
+## Code Reference
+```python
+# src/workflows/email_processor.py:256-294
+def create_workflow() -> StateGraph:
+    ...
+```
+```

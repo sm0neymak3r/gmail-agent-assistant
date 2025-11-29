@@ -31,28 +31,66 @@ gmail-agent-assistant/
 ### Completed
 - [x] GCP project setup (`gmail-agent-prod`)
 - [x] Terraform infrastructure deployed (dev environment)
-  - Cloud Run service (placeholder image)
+  - Cloud Run service with application deployed (v12)
   - Cloud SQL PostgreSQL database with schema
   - VPC with private connectivity
   - Secret Manager (OAuth, Anthropic API key, DB password)
   - Cloud Scheduler for hourly processing
+  - Cloud Tasks queue for reliable batch processing
   - Bastion host for secure database access
   - Monitoring and logging
 - [x] Application code (Phase 1)
-  - FastAPI application with `/health` and `/process` endpoints
+  - FastAPI application with health, process, and batch endpoints
   - Gmail API client with OAuth 2.0
   - Anthropic Claude client (Haiku for fast, Sonnet for quality)
   - LangGraph categorization workflow
   - CLI approval interface
   - SQLAlchemy models for all database tables
+- [x] Batch processing for full inbox
+  - Cloud Tasks-based reliable processing
+  - Database-level locking for concurrency protection
+  - Automatic retry with exponential backoff
+  - Progress tracking and pause/resume support
 
 ### In Progress
-- [ ] Build, push, and deploy container to Cloud Run
-- [ ] Test end-to-end email processing
+- [ ] Processing full inbox (~65,000 emails)
 
 ## Next Steps
 
-### 1. Build and Deploy Container
+### 1. Local Integration Testing (Recommended First)
+
+Use the test harness to validate the pipeline before deployment:
+
+```bash
+# Set up credentials
+export GMAIL_OAUTH_CLIENT='<oauth-client-json>'
+export GMAIL_USER_TOKEN='<user-token-json>'
+export ANTHROPIC_API_KEY='sk-ant-...'
+
+# Dry run - analyze emails without processing (no API cost)
+python scripts/test_batch.py \
+  --query "after:2024/11/01 before:2025/02/01" \
+  --dry-run
+
+# Process a sample of 10 emails
+python scripts/test_batch.py \
+  --query "after:2024/11/01 before:2025/02/01" \
+  --sample 10
+
+# Save results to file
+python scripts/test_batch.py \
+  --query "after:2024/11/01 before:2025/02/01" \
+  --sample 10 \
+  --output results.json
+```
+
+The test harness provides:
+- Email count and date distribution
+- Cost estimation before processing
+- Sample processing with real Claude API
+- Category distribution and confidence metrics
+
+### 2. Build and Deploy Container
 ```bash
 # Authenticate Docker with Artifact Registry
 gcloud auth configure-docker us-central1-docker.pkg.dev
@@ -69,7 +107,7 @@ gcloud run deploy gmail-agent-dev \
   --region=us-central1
 ```
 
-### 2. Test the Application
+### 3. Test the Deployed Application
 ```bash
 # Check health endpoint
 curl https://gmail-agent-dev-<hash>.run.app/health
@@ -80,7 +118,7 @@ curl -X POST https://gmail-agent-dev-<hash>.run.app/process \
   -d '{"trigger": "manual", "query": "is:unread", "max_emails": 10}'
 ```
 
-### 3. Use CLI Approval Interface
+### 4. Use CLI Approval Interface
 ```bash
 # Set up SSH tunnel through bastion
 gcloud compute ssh gmail-agent-bastion-dev \
@@ -96,19 +134,19 @@ export DATABASE_PASSWORD=$(gcloud secrets versions access latest --secret="db-pa
 python -m src.cli.approval
 ```
 
-### 4. Phase 2 Features (Future)
+### 5. Phase 2 Features (Future)
 - [ ] Importance detection agent
 - [ ] Calendar event extraction
 - [ ] Unsubscribe management
 - [ ] Active learning from feedback
 
-### 5. Phase 3 Features (Future)
+### 6. Phase 3 Features (Future)
 - [ ] Obsidian knowledge base integration
 - [ ] Draft reply generation
 - [ ] Dynamic category creation
 - [ ] Batch CLI operations
 
-### 6. Production Readiness
+### 7. Production Readiness
 - [ ] Enable Cloud SQL deletion protection
 - [ ] Configure alert notification channels
 - [ ] Set up CI/CD pipeline
@@ -123,7 +161,7 @@ python -m src.cli.approval
 - Terraform installed
 - gcloud CLI authenticated
 - Docker installed
-- Python 3.11+
+- Python 3+
 
 ### Deploy Infrastructure
 ```bash
@@ -162,6 +200,42 @@ gcloud compute ssh gmail-agent-bastion-dev \
 PGPASSWORD=$DB_PASSWORD psql -h localhost -U agent_user -d email_agent
 ```
 
+## Batch Processing (Full Inbox)
+
+Process your entire Gmail inbox reliably. Start the job and close your laptop - processing continues on Cloud Run.
+
+### Start Processing
+```bash
+curl -X POST https://gmail-agent-dev-621335261494.us-central1.run.app/process-all \
+  -H "Content-Type: application/json" \
+  -d '{"start_date": "2015-01-01", "chunk_months": 2}'
+```
+
+### Check Progress
+```bash
+curl https://gmail-agent-dev-621335261494.us-central1.run.app/process-status
+```
+
+### Pause/Resume
+```bash
+# Pause
+curl -X POST https://gmail-agent-dev-621335261494.us-central1.run.app/process-pause/{job_id}
+
+# Resume
+curl -X POST https://gmail-agent-dev-621335261494.us-central1.run.app/process-continue/{job_id}
+```
+
+### How It Works
+1. Job created in database, first task enqueued to Cloud Tasks
+2. Cloud Tasks dispatches to `/batch-worker` endpoint
+3. Worker processes one 2-month chunk (~500 emails)
+4. Progress saved, next task enqueued automatically
+5. If worker fails, Cloud Tasks retries (4 attempts, exponential backoff)
+
+### Monitoring
+- **Cloud Tasks Console**: https://console.cloud.google.com/cloudtasks/queue/us-central1/gmail-agent-batch-dev?project=gmail-agent-prod
+- **Debug endpoint**: `GET /process-debug/{job_id}` - raw job data with lock status
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
@@ -171,6 +245,12 @@ PGPASSWORD=$DB_PASSWORD psql -h localhost -U agent_user -d email_agent
 | `/process` | POST | Process emails (batch or single) |
 | `/pending` | GET | Get emails pending approval |
 | `/approve/{email_id}` | POST | Approve/correct categorization |
+| `/process-all` | POST | Start batch processing entire inbox |
+| `/process-status` | GET | Get latest batch job status |
+| `/process-status/{job_id}` | GET | Get specific batch job status |
+| `/process-pause/{job_id}` | POST | Pause a running batch job |
+| `/process-continue/{job_id}` | POST | Resume a paused/failed batch job |
+| `/batch-worker` | POST | Called by Cloud Tasks (internal) |
 
 ## Environment Variables
 
@@ -179,7 +259,9 @@ The application has access to these environment variables in Cloud Run:
 | Variable | Description |
 |----------|-------------|
 | `PROJECT_ID` | GCP project ID |
+| `PROJECT_NUMBER` | GCP project number |
 | `ENVIRONMENT` | Environment name (dev/staging/prod) |
+| `REGION` | GCP region (us-central1) |
 | `DATABASE_HOST` | Cloud SQL private IP |
 | `DATABASE_NAME` | Database name |
 | `DATABASE_USER` | Database username |
@@ -187,6 +269,8 @@ The application has access to these environment variables in Cloud Run:
 | `GMAIL_OAUTH_CLIENT` | OAuth client credentials JSON |
 | `GMAIL_USER_TOKEN` | User access/refresh tokens JSON |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
+| `CLOUD_TASKS_QUEUE` | Cloud Tasks queue path for batch processing |
+| `SERVICE_ACCOUNT_EMAIL` | Service account for Cloud Tasks OIDC auth |
 
 ## Email Categories (Phase 1)
 
@@ -220,10 +304,15 @@ The application has access to these environment variables in Cloud Run:
                         ┌────────▼────────┐
                         │  Anthropic API  │
                         │  (Claude)       │
+                        └────────┬────────┘
+                                 │
+                        ┌────────▼────────┐
+                        │  Cloud Tasks    │
+                        │  (Batch Queue)  │
                         └─────────────────┘
 ```
 
-### Processing Flow
+### Processing Flow (Hourly)
 
 1. **Cloud Scheduler** triggers `/process` endpoint hourly
 2. **Gmail Client** fetches unread emails (batch of 100)
@@ -232,6 +321,15 @@ The application has access to these environment variables in Cloud Run:
 5. Low-confidence emails go to **approval queue** in PostgreSQL
 6. **CLI or API** allows human review and correction
 7. **Feedback** stored for future model improvement
+
+### Batch Processing Flow (Full Inbox)
+
+1. User calls `POST /process-all` to start batch job
+2. **Cloud Tasks** receives first task and dispatches to `/batch-worker`
+3. Worker processes one chunk (2-month date range, ~500 emails)
+4. Progress saved to **Cloud SQL**, next task enqueued
+5. **Cloud Tasks** handles retries on failure (4 attempts, exponential backoff)
+6. User can check progress, pause, or resume anytime
 
 ## License
 

@@ -7,6 +7,7 @@ from src.models.feedback import Feedback
 from src.models.importance_rule import ImportanceRule
 from src.models.unsubscribe_queue import UnsubscribeQueue
 from src.models.processing_log import ProcessingLog
+from src.models.batch_job import BatchJob
 
 __all__ = [
     "Base",
@@ -20,4 +21,5 @@ __all__ = [
     "ImportanceRule",
     "UnsubscribeQueue",
     "ProcessingLog",
+    "BatchJob",
 ]

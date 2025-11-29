@@ -9,7 +9,7 @@ Orchestrates the email processing pipeline:
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from langgraph.graph import StateGraph, START, END
@@ -25,6 +25,13 @@ from src.workflows.state import EmailState, create_initial_state
 from src.agents.categorization import categorize_email
 
 logger = logging.getLogger(__name__)
+
+
+def to_naive_utc(dt: datetime) -> datetime:
+    """Convert timezone-aware datetime to naive UTC datetime for database storage."""
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 class EmailProcessor:
@@ -178,7 +185,7 @@ class EmailProcessor:
                 to_emails=email_msg.to_emails,
                 subject=email_msg.subject,
                 body=email_msg.body,
-                date=email_msg.date,
+                date=to_naive_utc(email_msg.date),
                 status="processing",
             )
             session.add(email_record)
@@ -217,17 +224,23 @@ class EmailProcessor:
                 )
                 session.add(checkpoint)
 
-                # Log processing
+                # Log processing - compute latency from email date to now
+                # Only track latency for recent emails (< 7 days) to avoid int32 overflow
+                latency_ms = None
+                if email_msg.date:
+                    now_utc = datetime.now(timezone.utc)
+                    email_date = email_msg.date if email_msg.date.tzinfo else email_msg.date.replace(tzinfo=timezone.utc)
+                    age_seconds = (now_utc - email_date).total_seconds()
+                    # Only log latency for emails < 7 days old (to avoid int32 overflow)
+                    if age_seconds < 7 * 24 * 3600:
+                        latency_ms = int(age_seconds * 1000)
+
                 log_entry = ProcessingLog(
                     email_id=email_id,
                     agent="email_processor",
                     action="process_email",
                     status="success",
-                    latency_ms=int(
-                        (datetime.utcnow() - email_msg.date).total_seconds() * 1000
-                    )
-                    if email_msg.date
-                    else None,
+                    latency_ms=latency_ms,
                 )
                 session.add(log_entry)
 

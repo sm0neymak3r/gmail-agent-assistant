@@ -10,15 +10,16 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
+from sqlalchemy import text, select
 
 from src.config import get_config
-from src.models import get_async_session, Email
+from src.models import get_async_session, Email, BatchJob
 from src.services.gmail_client import GmailClient
-from src.services.anthropic_client import AnthropicClient
+from src.services.batch_processor import BatchProcessor, LockAcquisitionFailed
 from src.workflows.email_processor import EmailProcessor
 
 # Configure logging
@@ -106,7 +107,7 @@ async def health_check():
     try:
         async_session = get_async_session()
         async with async_session() as session:
-            await session.execute("SELECT 1")
+            await session.execute(text("SELECT 1"))
         checks["database"] = "ok"
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
@@ -305,6 +306,212 @@ async def approve_categorization(
     except Exception as e:
         logger.error(f"Approval failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Batch Processing Endpoints (Cloud Tasks-based for reliable processing)
+# ============================================================================
+
+class BatchJobRequest(BaseModel):
+    """Request body for /process-all endpoint."""
+    start_date: str = "2015-01-01"  # YYYY-MM-DD
+    end_date: Optional[str] = None  # YYYY-MM-DD, defaults to today
+    chunk_months: int = 2  # Months per chunk
+
+
+class BatchJobResponse(BaseModel):
+    """Response body for batch job endpoints."""
+    job_id: str
+    status: str
+    message: str
+
+
+class BatchStatusResponse(BaseModel):
+    """Detailed status of a batch job."""
+    job_id: str
+    status: str
+    progress_percent: float
+    chunks_completed: int
+    chunks_total: int
+    emails_processed: int
+    emails_categorized: int
+    emails_labeled: int
+    emails_pending_approval: int
+    emails_errors: int
+    estimated_cost: float
+    started_at: Optional[str]
+    last_activity: Optional[str]
+    current_chunk: Optional[str]
+    error: Optional[str]
+    is_locked: Optional[bool] = None
+
+
+class BatchWorkerRequest(BaseModel):
+    """Request body for /batch-worker endpoint (called by Cloud Tasks)."""
+    job_id: str
+    task_id: str
+
+
+@app.post("/process-all", response_model=BatchJobResponse)
+async def start_batch_processing(request: BatchJobRequest):
+    """Start processing the entire inbox using Cloud Tasks.
+
+    Creates a batch job and enqueues the first task to Cloud Tasks.
+    Cloud Tasks handles reliable delivery and automatic retries.
+
+    Use /process-status/{job_id} to check progress.
+    """
+    processor = BatchProcessor()
+
+    try:
+        job = await processor.start_job(
+            start_date=request.start_date,
+            end_date=request.end_date,
+            chunk_months=request.chunk_months,
+        )
+        return BatchJobResponse(
+            job_id=job.job_id,
+            status="started",
+            message=f"Batch job started. Processing {job.chunks_total} chunks via Cloud Tasks. Check progress at /process-status/{job.job_id}",
+        )
+    except ValueError as e:
+        # Job already running or invalid dates
+        error_msg = str(e)
+        if "already running" in error_msg.lower():
+            # Extract job_id from error message
+            job_id = error_msg.split()[1] if "Job" in error_msg else "unknown"
+            return BatchJobResponse(
+                job_id=job_id,
+                status="already_running",
+                message=error_msg,
+            )
+        raise HTTPException(status_code=400, detail=error_msg)
+    except Exception as e:
+        logger.error(f"Failed to start batch job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/batch-worker")
+async def batch_worker(request: BatchWorkerRequest):
+    """Process one chunk of a batch job.
+
+    Called by Cloud Tasks. Returns:
+    - 200: Success (or lock held by another worker)
+    - 500: Failure (triggers Cloud Tasks retry)
+    """
+    processor = BatchProcessor()
+
+    try:
+        result = await processor.process_chunk(
+            job_id=request.job_id,
+            task_id=request.task_id,
+        )
+        return {"status": "ok", **result}
+
+    except LockAcquisitionFailed:
+        # Another worker has the lock - this is OK
+        logger.info(f"Lock held for job {request.job_id}, skipping")
+        return {"status": "skipped", "reason": "lock_held"}
+
+    except ValueError as e:
+        # Job not found
+        logger.error(f"Batch worker error: {e}")
+        return {"status": "error", "reason": str(e)}
+
+    except Exception as e:
+        # Processing error - return 500 to trigger Cloud Tasks retry
+        logger.error(f"Batch worker failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/process-continue/{job_id}")
+async def continue_batch_processing(job_id: str):
+    """Resume a paused or failed batch job.
+
+    Enqueues a new task to Cloud Tasks to continue processing.
+    """
+    processor = BatchProcessor()
+
+    try:
+        result = await processor.resume_job(job_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to resume job {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/process-pause/{job_id}")
+async def pause_batch_job(job_id: str):
+    """Pause a running batch job.
+
+    The job will stop after the current chunk completes.
+    Resume with POST /process-continue/{job_id}.
+    """
+    processor = BatchProcessor()
+
+    try:
+        result = await processor.pause_job(job_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to pause job {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/process-status/{job_id}", response_model=BatchStatusResponse)
+async def get_batch_status(job_id: str):
+    """Get the status of a batch processing job."""
+    processor = BatchProcessor()
+    status = await processor.get_status(job_id)
+
+    if not status:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return BatchStatusResponse(**status)
+
+
+@app.get("/process-status")
+async def get_latest_batch_status():
+    """Get the status of the most recent batch job."""
+    async_session = get_async_session()
+    async with async_session() as session:
+        result = await session.execute(
+            select(BatchJob).order_by(BatchJob.created_at.desc()).limit(1)
+        )
+        job = result.scalar_one_or_none()
+
+        if not job:
+            return {"status": "no_jobs", "message": "No batch jobs found. Start one with POST /process-all"}
+
+        return await get_batch_status(job.job_id)
+
+
+@app.get("/process-debug/{job_id}")
+async def get_batch_debug(job_id: str):
+    """Debug endpoint to see raw job data."""
+    async_session = get_async_session()
+    async with async_session() as session:
+        result = await session.execute(
+            select(BatchJob).where(BatchJob.job_id == job_id)
+        )
+        job = result.scalar_one_or_none()
+
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        return {
+            "job_id": job.job_id,
+            "status": job.status,
+            "completed_ranges": job.completed_ranges,
+            "completed_ranges_len": len(job.completed_ranges) if job.completed_ranges else 0,
+            "chunks_completed": job.chunks_completed,
+            "chunks_total": job.chunks_total,
+            "processing_lock_id": job.processing_lock_id,
+            "processing_lock_time": job.processing_lock_time.isoformat() if job.processing_lock_time else None,
+        }
 
 
 # Run with uvicorn when called directly

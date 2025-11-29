@@ -45,3 +45,9 @@ variable "cloudrun_max_instances" {
   type        = number
   default     = 5
 }
+
+variable "cloudrun_image" {
+  description = "Cloud Run container image"
+  type        = string
+  default     = "us-central1-docker.pkg.dev/gmail-agent-prod/gmail-agent-dev/agent:v12"
+}

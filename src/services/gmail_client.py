@@ -161,40 +161,83 @@ class GmailClient:
             logger.error(f"Gmail API error getting message {message_id}: {e}")
             raise
 
-    def batch_get_messages(self, message_ids: list[str]) -> list[EmailMessage]:
-        """Batch fetch multiple messages.
+    def batch_get_messages(
+        self,
+        message_ids: list[str],
+        batch_size: int = 10,
+        max_retries: int = 3,
+    ) -> list[EmailMessage]:
+        """Batch fetch multiple messages with rate limiting and retry logic.
 
         Args:
             message_ids: List of message IDs to fetch
+            batch_size: Number of messages per batch (default 10 for reliability)
+            max_retries: Maximum retry attempts for failed messages
 
         Returns:
             List of parsed EmailMessage objects
         """
-        messages = []
+        import time
 
-        def callback(request_id, response, exception):
-            if exception:
-                logger.error(f"Batch request error for {request_id}: {exception}")
+        all_messages = []
+        pending_ids = list(message_ids)
+        retry_count = 0
+
+        while pending_ids and retry_count <= max_retries:
+            messages = []
+            errors = []
+
+            def callback(request_id, response, exception):
+                if exception:
+                    logger.warning(f"Batch request error for {request_id}: {exception}")
+                    errors.append(request_id)
+                else:
+                    try:
+                        messages.append(self._parse_message(response))
+                    except Exception as e:
+                        logger.error(f"Error parsing message {request_id}: {e}")
+
+            # Process in batches
+            total_batches = (len(pending_ids) + batch_size - 1) // batch_size
+            for i, start in enumerate(range(0, len(pending_ids), batch_size)):
+                batch = self.service.new_batch_http_request(callback=callback)
+                batch_ids = pending_ids[start : start + batch_size]
+
+                for msg_id in batch_ids:
+                    batch.add(
+                        self.service.users()
+                        .messages()
+                        .get(userId="me", id=msg_id, format="full"),
+                        request_id=msg_id,
+                    )
+
+                if retry_count == 0:
+                    logger.info(f"Fetching batch {i + 1}/{total_batches} ({len(batch_ids)} messages)...")
+                batch.execute()
+
+                # Add delay between batches to avoid rate limits
+                # Increase delay on retries
+                delay = 1.0 + (retry_count * 2.0)
+                if i < total_batches - 1:
+                    time.sleep(delay)
+
+            all_messages.extend(messages)
+
+            # If there were errors, prepare for retry
+            if errors:
+                retry_count += 1
+                if retry_count <= max_retries:
+                    logger.info(f"Retrying {len(errors)} failed messages (attempt {retry_count}/{max_retries})...")
+                    pending_ids = errors
+                    # Wait before retry
+                    time.sleep(2.0 * retry_count)
+                else:
+                    logger.warning(f"Giving up on {len(errors)} messages after {max_retries} retries")
             else:
-                try:
-                    messages.append(self._parse_message(response))
-                except Exception as e:
-                    logger.error(f"Error parsing message {request_id}: {e}")
+                pending_ids = []
 
-        # Gmail batch limit is 100 per request
-        for i in range(0, len(message_ids), 100):
-            batch = self.service.new_batch_http_request(callback=callback)
-            for msg_id in message_ids[i : i + 100]:
-                batch.add(
-                    self.service.users()
-                    .messages()
-                    .get(userId="me", id=msg_id, format="full"),
-                    request_id=msg_id,
-                )
-            batch.execute()
-
-        logger.info(f"Batch fetched {len(messages)} messages")
-        return messages
+        logger.info(f"Batch fetched {len(all_messages)} messages ({len(pending_ids)} failed)")
+        return all_messages
 
     def _parse_message(self, message: dict) -> EmailMessage:
         """Parse Gmail API message into EmailMessage object."""

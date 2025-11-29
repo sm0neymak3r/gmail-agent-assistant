@@ -15,10 +15,11 @@ A comprehensive dictionary of all Terraform configuration files, resources, and 
 7. [registry.tf](#registrytf)
 8. [cloudrun.tf](#cloudruntf)
 9. [scheduler.tf](#schedulertf)
-10. [monitoring.tf](#monitoringtf)
-11. [bastion.tf](#bastiontf)
-12. [outputs.tf](#outputstf)
-13. [terraform.tfvars.example](#terraformtfvarsexample)
+10. [tasks.tf](#taskstf)
+11. [monitoring.tf](#monitoringtf)
+12. [bastion.tf](#bastiontf)
+13. [outputs.tf](#outputstf)
+14. [terraform.tfvars.example](#terraformtfvarsexample)
 
 ---
 
@@ -798,6 +799,174 @@ Defines Cloud Scheduler for periodic email processing.
 
 ---
 
+## tasks.tf
+
+Defines Cloud Tasks for reliable batch processing of historical inbox emails.
+
+### Resource: google_cloud_tasks_queue.batch
+
+**Type:** Cloud Tasks Queue
+**Name:** `gmail-agent-batch-v3`
+
+| Attribute | Value | Description |
+|-----------|-------|-------------|
+| `name` | `gmail-agent-batch-v3` | Queue name (v3 after previous queues were corrupted) |
+| `location` | `var.region` | Regional placement |
+
+**Note:** Queue names have a 7-day tombstone period after deletion. If a queue becomes corrupted/stuck, create a new queue with incremented version (v3, v4, etc.).
+
+#### Rate Limits
+
+| Attribute | Value | Description |
+|-----------|-------|-------------|
+| `max_concurrent_dispatches` | `1` | Serial processing - one chunk at a time |
+| `max_dispatches_per_second` | `1` | 1 dispatch per second for faster processing |
+
+**Serial Processing Rationale:** Batch processing modifies shared state (job progress, email counts). Serial execution prevents race conditions and ensures predictable ordering.
+
+#### Stackdriver Logging Configuration
+
+| Attribute | Value | Description |
+|-----------|-------|-------------|
+| `sampling_ratio` | `1.0` | Log 100% of task operations |
+
+**Purpose:** Full logging enables debugging of dispatch failures. Set to `0.0` (default) or lower in production if log volume is a concern.
+
+**Log Query:**
+```
+resource.type="cloud_tasks_queue"
+jsonPayload.@type="type.googleapis.com/google.cloud.tasks.logging.v1.TaskActivityLog"
+```
+
+#### Retry Configuration
+
+| Attribute | Value | Description |
+|-----------|-------|-------------|
+| `max_attempts` | `4` | Original attempt + 3 retries |
+| `min_backoff` | `10s` | Initial retry delay |
+| `max_backoff` | `600s` | Maximum retry delay (10 minutes) |
+| `max_doublings` | `4` | Exponential backoff doublings |
+
+**Backoff Progression:** 10s → 20s → 40s → 80s → 160s → 320s → 600s (capped)
+
+### Resource: google_cloud_tasks_queue_iam_member.enqueuer
+
+**Type:** IAM Binding
+
+| Attribute | Value | Description |
+|-----------|-------|-------------|
+| `name` | `google_cloud_tasks_queue.batch.id` | Target queue |
+| `role` | `roles/cloudtasks.enqueuer` | Permission to add tasks to queue |
+| `member` | Runtime service account | `email-agent-runtime@{project}.iam.gserviceaccount.com` |
+
+**Purpose:** Allows Cloud Run to enqueue continuation tasks after processing each chunk
+
+### Resource: google_cloud_run_service_iam_member.cloudtasks_invoker
+
+**Type:** IAM Binding
+
+| Attribute | Value | Description |
+|-----------|-------|-------------|
+| `service` | `google_cloud_run_v2_service.main.name` | Target Cloud Run service |
+| `location` | `var.region` | Service location |
+| `role` | `roles/run.invoker` | Permission to invoke the service |
+| `member` | Runtime service account | `email-agent-runtime@{project}.iam.gserviceaccount.com` |
+
+**Purpose:** Allows Cloud Tasks to invoke the `/batch-worker` endpoint
+
+### Output: cloud_tasks_queue
+
+| Attribute | Value | Description |
+|-----------|-------|-------------|
+| `value` | `google_cloud_tasks_queue.batch.id` | Full queue path |
+| `description` | Full path to Cloud Tasks queue for batch processing | Human-readable description |
+
+**Example:** `projects/gmail-agent-prod/locations/us-central1/queues/gmail-agent-batch-v3`
+
+### Critical IAM Configuration (Manual)
+
+Cloud Tasks auto-dispatch requires an IAM binding that is NOT managed by Terraform (requires project number):
+
+```bash
+# Get project number
+PROJECT_NUMBER=$(gcloud projects describe gmail-agent-prod --format='value(projectNumber)')
+
+# Grant serviceAccountUser to Cloud Tasks service agent
+gcloud iam service-accounts add-iam-policy-binding \
+  email-agent-runtime@gmail-agent-prod.iam.gserviceaccount.com \
+  --member="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-cloudtasks.iam.gserviceaccount.com" \
+  --role="roles/iam.serviceAccountUser"
+```
+
+**Why serviceAccountUser?** Cloud Tasks needs `iam.serviceAccounts.actAs` permission to generate OIDC tokens for authenticated HTTP requests. This permission comes from `serviceAccountUser`, NOT `serviceAccountTokenCreator`.
+
+| Role | Key Permission | Used by Cloud Tasks |
+|------|----------------|---------------------|
+| `roles/iam.serviceAccountUser` | `iam.serviceAccounts.actAs` | ✅ Required for OIDC auto-dispatch |
+| `roles/iam.serviceAccountTokenCreator` | `iam.serviceAccounts.getOpenIdToken` | ❌ Not used by service agent |
+
+### Task Structure (Application Code)
+
+Tasks are created by the application with this structure:
+
+```python
+task = {
+    "http_request": {
+        "http_method": "POST",
+        "url": "https://{cloud-run-url}/batch-worker",
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps({"job_id": "...", "task_id": "..."}).encode("utf-8"),
+        "oidc_token": {
+            "service_account_email": "email-agent-runtime@{project}.iam.gserviceaccount.com",
+            "audience": "https://{cloud-run-url}",
+        },
+    }
+}
+```
+
+**OIDC Audience:** Must be the Cloud Run `.run.app` URL, not a custom domain. Custom domains are not supported for OIDC token validation.
+
+### Batch Processing Flow
+
+```
+1. User calls POST /batch-process
+   └─► Creates batch_jobs record in database
+   └─► Enqueues first chunk task to Cloud Tasks
+
+2. Cloud Tasks dispatches task to /batch-worker
+   └─► Task includes job_id and task_id
+   └─► OIDC token authenticates request
+
+3. /batch-worker processes chunk
+   └─► Fetches emails for date range
+   └─► Classifies with Anthropic API
+   └─► Updates job progress in database
+   └─► Enqueues next chunk (if more remain)
+
+4. Repeat until all chunks complete
+   └─► Job status changes to "completed"
+```
+
+### Troubleshooting
+
+| Symptom | Diagnostic | Solution |
+|---------|------------|----------|
+| Tasks stuck at 0 dispatch attempts | `gcloud tasks describe TASK_ID` shows `dispatchCount: 0` | Add `serviceAccountUser` IAM binding |
+| Manual dispatch works, auto fails | `gcloud tasks run TASK_ID` succeeds | Missing `actAs` permission on service agent |
+| Queue stuck/corrupted | Tasks never dispatch even with correct IAM | Create new queue (v4, v5, etc.) |
+| OIDC audience mismatch | 401 errors in Cloud Run logs | Ensure audience is `.run.app` URL |
+
+**Manual Dispatch for Testing:**
+```bash
+gcloud tasks run TASK_ID \
+  --queue=gmail-agent-batch-v3 \
+  --location=us-central1
+```
+
+Note: Manual dispatch uses your credentials, bypassing the service agent. Success with manual dispatch but failure with auto-dispatch indicates IAM misconfiguration.
+
+---
+
 ## monitoring.tf
 
 Defines logging, storage, and alerting infrastructure.
@@ -1172,6 +1341,7 @@ cloudrun_max_instances = 5           # Max scaling
 | Artifact Registry | `gmail-agent-{env}` | `gmail-agent-dev` |
 | Cloud Run | `gmail-agent-{env}` | `gmail-agent-dev` |
 | Scheduler | `gmail-agent-processor-{env}` | `gmail-agent-processor-dev` |
+| Cloud Tasks Queue | `gmail-agent-batch-v3` | `gmail-agent-batch-v3` |
 | Log Sink | `gmail-agent-archive-{env}` | `gmail-agent-archive-dev` |
 | Log Bucket | `{project}-logs-{env}` | `gmail-agent-prod-logs-dev` |
 | Alert Policy | `Gmail Agent High Error Rate - {env}` | `Gmail Agent High Error Rate - dev` |
@@ -1186,6 +1356,8 @@ cloudrun_max_instances = 5           # Max scaling
 | `roles/artifactregistry.reader` | Artifact Registry | Pull Docker images |
 | `roles/run.invoker` | Cloud Run | Invoke the service |
 | `roles/storage.objectCreator` | Cloud Storage | Write log files |
+| `roles/cloudtasks.enqueuer` | Cloud Tasks Queue | Add tasks to queue |
+| `roles/iam.serviceAccountUser` | Service Account | Cloud Tasks OIDC token generation (manual) |
 
 ---
 
@@ -1203,5 +1375,6 @@ These APIs must be enabled in your GCP project:
 | `artifactregistry.googleapis.com` | Artifact Registry | Image storage |
 | `secretmanager.googleapis.com` | Secret Manager | Secret storage |
 | `cloudscheduler.googleapis.com` | Cloud Scheduler | Job scheduling |
+| `cloudtasks.googleapis.com` | Cloud Tasks | Batch processing queue |
 | `logging.googleapis.com` | Cloud Logging | Log management |
 | `monitoring.googleapis.com` | Cloud Monitoring | Alerts and metrics |

@@ -4,10 +4,11 @@
 flowchart TB
     subgraph Triggers["Trigger Layer"]
         CS[Cloud Scheduler<br/>Hourly 0 * * * *]
+        CT[Cloud Tasks<br/>Batch Processing Queue<br/>gmail-agent-batch-v3]
     end
 
     subgraph GCP["GCP Project"]
-        subgraph VPC["VPC Network<br/>gmail-agent-vpc-{env}"]
+        subgraph VPC["VPC Network<br/>gmail-agent-vpc-ENV"]
             subgraph Subnet["Subnet 10.0.1.0/24"]
                 BASTION[Bastion Host<br/>e2-micro<br/>Debian 12]
             end
@@ -33,13 +34,13 @@ flowchart TB
         subgraph Secrets["Secret Manager"]
             SM_OAUTH[gmail-oauth-token<br/>OAuth Client Credentials]
             SM_TOKEN[gmail-user-token<br/>User Access/Refresh Tokens]
-            SM_ANTH[anthropic-api-key-{env}<br/>Anthropic API Key]
-            SM_DB[db-password-{env}<br/>Auto-generated]
+            SM_ANTH["anthropic-api-key-ENV<br/>Anthropic API Key"]
+            SM_DB["db-password-ENV<br/>Auto-generated"]
         end
 
         subgraph IAM["Service Accounts"]
             SA_RUNTIME[email-agent-runtime<br/>Cloud Run Identity]
-            SA_BASTION[bastion-{env}<br/>Bastion Identity]
+            SA_BASTION["bastion-ENV<br/>Bastion Identity"]
         end
 
         subgraph Observability["Monitoring & Logging"]
@@ -68,6 +69,10 @@ flowchart TB
 
     %% Scheduler Trigger Flow
     CS -->|"HTTP POST<br/>+ OIDC Token"| CR
+
+    %% Cloud Tasks Trigger Flow
+    CT -->|"HTTP POST /batch-worker<br/>+ OIDC Token"| CR
+    CR -->|"Enqueue next chunk"| CT
 
     %% Container Setup
     AR -.->|"Pull Image<br/>on Deploy"| CR
@@ -111,7 +116,7 @@ flowchart TB
     classDef network fill:#00ACC1,stroke:#00838F,color:#fff
     classDef admin fill:#78909C,stroke:#546E7A,color:#fff
 
-    class CS trigger
+    class CS,CT trigger
     class CR,AR compute
     class SQL,GCS storage
     class GMAIL,ANTHROPIC external
@@ -140,6 +145,13 @@ flowchart TB
 |-----------|----------|-------|
 | Cloud Run | `gmail-agent-{env}` | 0-5 instances, 2 vCPU, 4Gi RAM, 3600s timeout |
 | Bastion | `gmail-agent-bastion-{env}` | e2-micro, Debian 12, preemptible (non-prod) |
+
+### Task Queues
+
+| Component | Resource | Configuration |
+|-----------|----------|---------------|
+| Cloud Scheduler | `gmail-agent-processor-{env}` | Hourly cron (0 * * * *), OIDC auth |
+| Cloud Tasks | `gmail-agent-batch-v3` | Serial (1 concurrent), 4 retries, 10min max backoff |
 
 ### Database
 
@@ -171,6 +183,8 @@ flowchart TB
 | Flow | Method | Details |
 |------|--------|---------|
 | Scheduler → Cloud Run | OIDC Token | Service account identity verification |
+| Cloud Tasks → Cloud Run | OIDC Token | Service agent impersonates runtime SA via `serviceAccountUser` role |
+| Cloud Run → Cloud Tasks | IAM | `cloudtasks.enqueuer` role on runtime SA |
 | Cloud Run → Gmail API | OAuth 2.0 | User tokens with `gmail.modify` scope |
 | Cloud Run → Anthropic API | API Key | Bearer token authentication |
 | Cloud Run → Secret Manager | IAM | `secretAccessor` role on runtime SA |
@@ -219,10 +233,12 @@ flowchart TB
 | `allow-iap-ssh-{env}` | 35.235.240.0/20 (IAP) | `iap-ssh` tagged instances | TCP 22 | SSH via IAP |
 | `allow-bastion-sql-{env}` | `bastion` tagged instances | VPC | TCP 5432 | Database access |
 
-## Processing Flow
+## Processing Flows
+
+### Hourly Processing (Cloud Scheduler)
 
 ```
-1. Cloud Scheduler (hourly)
+1. Cloud Scheduler (hourly cron: 0 * * * *)
    │
    ▼ POST /process + OIDC token
 2. Cloud Run Service
@@ -233,7 +249,7 @@ flowchart TB
    │    └─ Database password
    │
    ├──► Gmail API (via NAT)
-   │    ├─ Fetch emails (100/batch)
+   │    ├─ Fetch recent emails (100/batch)
    │    └─ Apply labels
    │
    ├──► Anthropic API (via NAT)
@@ -243,6 +259,69 @@ flowchart TB
         ├─ Store processed emails
         ├─ Save checkpoints
         └─ Log actions
+```
+
+### Batch Processing (Cloud Tasks)
+
+```
+1. User calls POST /batch-process
+   │
+   ├──► Cloud SQL: Create batch_jobs record
+   │    └─ Status: "running", chunks_total: N
+   │
+   └──► Cloud Tasks: Enqueue first chunk task
+        └─ OIDC token for authentication
+
+2. Cloud Tasks dispatches to /batch-worker
+   │
+   ▼ POST /batch-worker + OIDC token
+3. Cloud Run processes chunk
+   │
+   ├──► Gmail API: Fetch emails for date range
+   │    └─ 2-month chunks, 500 emails max
+   │
+   ├──► Anthropic API: Classify emails
+   │    └─ Rate limit handling with retries
+   │
+   ├──► Cloud SQL: Update progress
+   │    ├─ chunks_completed++
+   │    ├─ emails_processed, emails_categorized
+   │    └─ last_activity timestamp
+   │
+   └──► Cloud Tasks: Enqueue next chunk (if more remain)
+        └─ Self-continuation pattern
+
+4. Repeat until all chunks complete
+   │
+   └──► Cloud SQL: Status = "completed"
+```
+
+### Batch Processing State Machine
+
+```
+                    ┌─────────────┐
+                    │   pending   │
+                    └──────┬──────┘
+                           │ POST /batch-process
+                           ▼
+                    ┌─────────────┐
+               ┌───►│   running   │◄───┐
+               │    └──────┬──────┘    │
+               │           │           │
+        Cloud Tasks    Process    Cloud Tasks
+        retry on       chunk      enqueue next
+        failure        success    chunk
+               │           │           │
+               │           ▼           │
+               │    ┌─────────────┐    │
+               └────┤ processing  ├────┘
+                    │   chunk N   │
+                    └──────┬──────┘
+                           │ All chunks done
+                           ▼
+                    ┌─────────────┐
+                    │  completed  │
+                    └─────────────┘
 ```
 
 ## Resource Dependencies
@@ -257,7 +336,10 @@ google_compute_network.main
 │           └── google_sql_user.agent
 ├── google_vpc_access_connector.connector
 │   └── google_cloud_run_v2_service.main
-│       └── google_cloud_scheduler_job.hourly_processor
+│       ├── google_cloud_scheduler_job.hourly_processor
+│       └── google_cloud_tasks_queue.batch
+│           ├── google_cloud_tasks_queue_iam_member.enqueuer
+│           └── google_cloud_run_service_iam_member.cloudtasks_invoker
 ├── google_compute_router.router
 │   └── google_compute_router_nat.nat
 ├── google_compute_instance.bastion

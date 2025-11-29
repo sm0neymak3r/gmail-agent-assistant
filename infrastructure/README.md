@@ -6,6 +6,7 @@
 - **Networking**: VPC with NAT for external API calls
 - **Secrets**: Secret Manager for API keys and OAuth credentials
 - **Scheduling**: Cloud Scheduler for hourly processing
+- **Batch Processing**: Cloud Tasks for reliable historical inbox processing
 - **Storage**: Cloud Storage for log archival
 - **LLM Provider**: Anthropic (Claude Haiku/Sonnet/Opus)
 
@@ -195,7 +196,73 @@ terraform destroy
 4. Service account with minimal permissions (principle of least privilege)
 5. OAuth 2.0 for personal Gmail access (not domain-wide delegation)
 
+## Batch Processing with Cloud Tasks
+
+Cloud Tasks provides reliable, autonomous batch processing for historical inbox analysis. This enables processing thousands of emails without requiring an active client connection.
+
+### How It Works
+
+1. **Batch Job Initiation**: User starts a batch job via `/batch-process` endpoint
+2. **Chunk Creation**: System divides date range into 2-month chunks
+3. **Task Chaining**: Each chunk completion enqueues the next chunk via Cloud Tasks
+4. **Automatic Retries**: Cloud Tasks handles failures with exponential backoff
+5. **Autonomous Execution**: Processing continues even when user closes their laptop
+
+### Queue Configuration
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| Queue Name | `gmail-agent-batch-v3` | Unique queue for batch processing |
+| Max Concurrent | 1 | Serial processing (one chunk at a time) |
+| Dispatch Rate | 1/sec | Faster processing with rate limiting |
+| Max Attempts | 4 | Original + 3 retries |
+| Max Backoff | 600s | 10-minute max retry delay |
+| Logging | 100% | Full task operation logging for debugging |
+
+### IAM Requirements
+
+Cloud Tasks auto-dispatch requires specific IAM configuration:
+
+```bash
+# Get project number
+PROJECT_NUMBER=$(gcloud projects describe gmail-agent-prod --format='value(projectNumber)')
+
+# Cloud Tasks service agent needs serviceAccountUser (not serviceAccountTokenCreator!)
+gcloud iam service-accounts add-iam-policy-binding \
+  email-agent-runtime@gmail-agent-prod.iam.gserviceaccount.com \
+  --member="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-cloudtasks.iam.gserviceaccount.com" \
+  --role="roles/iam.serviceAccountUser"
+```
+
+**Critical**: The `serviceAccountUser` role provides `iam.serviceAccounts.actAs` permission, which Cloud Tasks needs to generate OIDC tokens for authenticated requests. The `serviceAccountTokenCreator` role does NOT work for Cloud Tasks auto-dispatch.
+
+### Monitoring Batch Jobs
+
+```bash
+# Check batch job status
+curl https://gmail-agent-dev-621335261494.us-central1.run.app/process-status
+
+# View queue status
+gcloud tasks queues describe gmail-agent-batch-v3 --location=us-central1
+
+# List pending tasks
+gcloud tasks list --queue=gmail-agent-batch-v3 --location=us-central1
+
+# View Cloud Tasks logs
+gcloud logging read 'resource.type="cloud_tasks_queue"' --limit=20
+```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Tasks stuck at 0 dispatch attempts | Missing `serviceAccountUser` role | Add IAM binding (see above) |
+| Manual dispatch works, auto fails | IAM misconfiguration | Verify service agent has `actAs` permission |
+| Queue corrupted/stuck | Unknown GCP issue | Create new queue (v3, v4, etc.) |
+
 ## Documentation
 
 - **REFERENCE.md**: Comprehensive dictionary of all Terraform resources
 - **CLAUDE.md**: AI assistant guide for working with this infrastructure
+- **gcp_architecture.md**: Visual architecture diagrams
+- **terraform_deployment.md**: Deployment sequence and dependencies
