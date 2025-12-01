@@ -1,0 +1,12 @@
+project_id = "gmail-agent-prod"
+region     = "us-central1"
+environment = "dev"
+
+# Database configuration
+db_tier = "db-f1-micro"  # For dev; use db-n1-standard-1 for prod
+
+# Cloud Run configuration
+cloudrun_cpu           = "2"
+cloudrun_memory        = "4Gi"
+cloudrun_timeout       = "3600"
+cloudrun_max_instances = 5
