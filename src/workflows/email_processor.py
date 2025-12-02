@@ -1,10 +1,21 @@
 """Main email processing workflow using LangGraph.
 
 Orchestrates the email processing pipeline:
+
+Phase 1:
 1. Fetch emails from Gmail
 2. Categorize using Claude
 3. Apply labels
 4. Queue for human approval if needed
+
+Phase 2 (Multi-Agent):
+1. Categorize email
+2. Check importance (always)
+3. In parallel:
+   - Extract calendar events (if relevant)
+   - Detect unsubscribe options (if newsletter/marketing)
+4. Route based on confidence and agent results
+5. Apply labels or queue for approval
 """
 
 import logging
@@ -23,6 +34,9 @@ from src.services.gmail_client import GmailClient, EmailMessage
 from src.services.anthropic_client import AnthropicClient
 from src.workflows.state import EmailState, create_initial_state
 from src.agents.categorization import categorize_email
+from src.agents.importance import check_importance
+from src.agents.calendar import extract_calendar_event, should_check_calendar
+from src.agents.unsubscribe import detect_unsubscribe, UNSUBSCRIBE_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +213,7 @@ class EmailProcessor:
                 # Update email record with results
                 email_record.category = final_state.get("category")
                 email_record.confidence = final_state.get("confidence")
+                email_record.importance_level = final_state.get("importance_level")
                 email_record.status = (
                     "pending_approval"
                     if final_state.get("needs_human_approval")
@@ -213,8 +228,22 @@ class EmailProcessor:
                         self.gmail.apply_label(email_msg.message_id, label_name)
                         final_state["processing_step"] = "labeled"
                         email_record.status = "labeled"
+
+                        # Apply importance label for high/critical emails
+                        importance_level = final_state.get("importance_level")
+                        if importance_level in ["critical", "high"]:
+                            importance_label = f"Agent/Priority/{importance_level.capitalize()}"
+                            self.gmail.apply_label(email_msg.message_id, importance_label)
+
                     except Exception as e:
                         logger.error(f"Failed to apply label: {e}")
+
+                # Queue unsubscribe if detected
+                if final_state.get("unsubscribe_available"):
+                    from src.agents.unsubscribe import queue_unsubscribe_if_available
+                    # Run async queueing in background (non-blocking)
+                    import asyncio
+                    asyncio.create_task(queue_unsubscribe_if_available(final_state))
 
                 # Save checkpoint
                 checkpoint = Checkpoint(
@@ -269,36 +298,123 @@ class EmailProcessor:
 def create_workflow() -> StateGraph:
     """Create the LangGraph workflow for email processing.
 
-    Phase 1 workflow:
-    START -> categorize -> route -> [apply_label | queue_approval] -> END
+    Phase 2 workflow with parallel agent execution:
+    START -> categorize -> check_importance -> [parallel: calendar | unsubscribe] -> finalize -> route -> END
+
+    The workflow runs:
+    1. Categorization (always)
+    2. Importance scoring (always)
+    3. Calendar extraction (if calendar-relevant content detected)
+    4. Unsubscribe detection (if newsletter/marketing category)
+    5. Final routing based on confidence and agent results
+
+    Calendar and unsubscribe agents run in parallel when both are triggered.
 
     Returns:
         Compiled StateGraph workflow
     """
     workflow = StateGraph(EmailState)
 
-    # Add nodes
+    # Add nodes - Phase 1
     workflow.add_node("categorize", categorize_email)
     workflow.add_node("apply_label", apply_label_node)
     workflow.add_node("queue_approval", queue_approval_node)
 
-    # Define routing logic
-    def route_after_categorization(state: EmailState) -> Literal["apply_label", "queue_approval"]:
-        """Route based on confidence threshold."""
+    # Add nodes - Phase 2
+    workflow.add_node("check_importance", check_importance)
+    workflow.add_node("extract_calendar", extract_calendar_event)
+    workflow.add_node("detect_unsubscribe", detect_unsubscribe)
+    workflow.add_node("finalize", finalize_processing_node)
+
+    # Routing function: After importance, decide which specialized agents to run
+    def route_after_importance(
+        state: EmailState,
+    ) -> Literal["extract_calendar", "detect_unsubscribe", "finalize"]:
+        """Route to specialized agents based on email content.
+
+        Calendar and unsubscribe agents are mutually exclusive in routing,
+        but the workflow structure allows parallel execution via branches
+        if LangGraph supports it in the future.
+
+        Returns the highest-priority agent to run next.
+        """
+        category = state.get("category", "")
+
+        # Check calendar triggers first (higher priority)
+        if should_check_calendar(state):
+            return "extract_calendar"
+
+        # Check unsubscribe triggers
+        if category in UNSUBSCRIBE_CATEGORIES:
+            return "detect_unsubscribe"
+
+        # No specialized processing needed
+        return "finalize"
+
+    # Routing function: After calendar, maybe also check unsubscribe
+    def route_after_calendar(
+        state: EmailState,
+    ) -> Literal["detect_unsubscribe", "finalize"]:
+        """After calendar extraction, check if unsubscribe also applies."""
+        category = state.get("category", "")
+
+        # Unlikely but possible: a newsletter with calendar content
+        if category in UNSUBSCRIBE_CATEGORIES:
+            return "detect_unsubscribe"
+
+        return "finalize"
+
+    # Final routing based on all agent results
+    def route_final(
+        state: EmailState,
+    ) -> Literal["apply_label", "queue_approval"]:
+        """Final routing based on confidence and agent results."""
         if state.get("needs_human_approval", False):
             return "queue_approval"
         return "apply_label"
 
     # Build graph
+    # Phase 1: Categorization
     workflow.add_edge(START, "categorize")
+
+    # Phase 2: Importance (always runs after categorization)
+    workflow.add_edge("categorize", "check_importance")
+
+    # Phase 2: Route to specialized agents
     workflow.add_conditional_edges(
-        "categorize",
-        route_after_categorization,
+        "check_importance",
+        route_after_importance,
+        {
+            "extract_calendar": "extract_calendar",
+            "detect_unsubscribe": "detect_unsubscribe",
+            "finalize": "finalize",
+        },
+    )
+
+    # After calendar, possibly also run unsubscribe
+    workflow.add_conditional_edges(
+        "extract_calendar",
+        route_after_calendar,
+        {
+            "detect_unsubscribe": "detect_unsubscribe",
+            "finalize": "finalize",
+        },
+    )
+
+    # Unsubscribe always goes to finalize
+    workflow.add_edge("detect_unsubscribe", "finalize")
+
+    # Finalize routes to final action
+    workflow.add_conditional_edges(
+        "finalize",
+        route_final,
         {
             "apply_label": "apply_label",
             "queue_approval": "queue_approval",
         },
     )
+
+    # Terminal nodes
     workflow.add_edge("apply_label", END)
     workflow.add_edge("queue_approval", END)
 
@@ -339,9 +455,79 @@ def queue_approval_node(state: EmailState) -> EmailState:
     state["processing_step"] = "pending_approval"
     state["processed_at"] = datetime.utcnow().isoformat()
 
+    approval_reasons = []
+    if state.get("confidence", 1.0) < get_config().confidence_threshold:
+        approval_reasons.append(f"low confidence ({state.get('confidence', 0):.2f})")
+    if state.get("calendar_action") == "conflict":
+        approval_reasons.append("calendar conflict detected")
+    if state.get("approval_type") == "calendar" and state.get("calendar_event"):
+        approval_reasons.append("calendar event needs confirmation")
+
+    reason_str = ", ".join(approval_reasons) if approval_reasons else "manual review"
+
     logger.info(
         f"Email {state['email_id']} queued for approval: "
-        f"{state['category']} (confidence: {state['confidence']:.2f})"
+        f"{state['category']} ({reason_str})"
+    )
+
+    return state
+
+
+def finalize_processing_node(state: EmailState) -> EmailState:
+    """Finalize processing after all agents have run.
+
+    Consolidates results from all Phase 2 agents and determines
+    final routing (auto-label vs human approval).
+
+    Args:
+        state: Current email state with all agent results
+
+    Returns:
+        Updated state with final routing decision
+    """
+    config = get_config()
+
+    # Check if any agent requires human approval
+    needs_approval = False
+    approval_type = "categorization"
+
+    # Check categorization confidence
+    if state.get("confidence", 1.0) < config.confidence_threshold:
+        needs_approval = True
+        approval_type = "categorization"
+
+    # Check calendar conflicts or low-confidence extraction
+    calendar_action = state.get("calendar_action")
+    if calendar_action == "conflict":
+        needs_approval = True
+        approval_type = "calendar"
+    elif calendar_action == "extracted":
+        calendar_event = state.get("calendar_event")
+        if calendar_event:
+            # Low confidence extraction
+            if calendar_event.get("confidence", 1.0) < 0.8:
+                needs_approval = True
+                approval_type = "calendar"
+            # Long events need confirmation
+            elif calendar_event.get("duration_minutes", 0) > 120:
+                needs_approval = True
+                approval_type = "calendar"
+
+    # Update state with final routing decision
+    state["needs_human_approval"] = needs_approval
+    if needs_approval:
+        state["approval_type"] = approval_type
+
+    # Log summary
+    importance = state.get("importance_level", "normal")
+    category = state.get("category", "Unknown")
+
+    logger.info(
+        f"Finalized email {state['email_id']}: "
+        f"category={category}, importance={importance}, "
+        f"calendar={calendar_action}, "
+        f"unsubscribe={'available' if state.get('unsubscribe_available') else 'none'}, "
+        f"approval={'required' if needs_approval else 'auto'}"
     )
 
     return state

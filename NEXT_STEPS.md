@@ -1,14 +1,15 @@
 # Gmail Agent Assistant - Next Steps Roadmap
 
-> **Last Updated**: November 2025
+> **Last Updated**: December 2025
 > **Phase 1 Status**: Complete (Historical processing finished)
-> **Current Focus**: Phase 2 Development
+> **Phase 2 Status**: Complete (Multi-agent workflow implemented)
+> **Current Focus**: Phase 3 Development (Obsidian Integration)
 
 ---
 
 ## Executive Summary
 
-With Phase 1 complete (464,757 emails processed, 24,679 categorized and labeled), the system is ready for Phase 2 enhancements. The prioritized roadmap below reflects a strategic shift: **Obsidian integration is elevated to high priority** as a context index for multi-agent reasoning, enabling cross-thread context for intelligent email responses.
+With Phase 2 complete (multi-agent workflow with importance scoring, calendar extraction, and unsubscribe detection), the system now has a robust foundation for intelligent email processing. The next focus is **Obsidian integration** as a context index for multi-agent reasoning, enabling cross-thread context for intelligent email responses.
 
 ---
 
@@ -37,9 +38,43 @@ Total Cost:          $576.30
 
 ---
 
-## Phase 2: Prioritized Roadmap
+## Completed Work (Phase 2)
 
-### Priority 1: Obsidian Knowledge Base Integration (NEW HIGH PRIORITY)
+| Component | Status | Documentation |
+|-----------|--------|---------------|
+| Importance Agent | ✅ Complete | [src/agents/importance.py](src/agents/importance.py) |
+| Calendar Agent | ✅ Complete | [src/agents/calendar.py](src/agents/calendar.py) |
+| Unsubscribe Agent | ✅ Complete | [src/agents/unsubscribe.py](src/agents/unsubscribe.py) |
+| Google Calendar Client | ✅ Complete | [src/services/google_calendar.py](src/services/google_calendar.py) |
+| Multi-Agent Workflow | ✅ Complete | [langgraph_workflow.md](langgraph_workflow.md) |
+| Unsubscribe CLI | ✅ Complete | [src/cli/unsubscribe.py](src/cli/unsubscribe.py) |
+| Phase 2 Database Schema | ✅ Complete | [scripts/migrations/002_phase2_tables.sql](scripts/migrations/002_phase2_tables.sql) |
+| VIP Sender Config | ✅ Complete | [config/vip_senders.yaml](config/vip_senders.yaml) |
+
+### Phase 2 Features
+
+**Importance Agent** (6-factor weighted scoring):
+- Sender authority (VIP list), urgency keywords, deadline detection
+- Financial signals, thread activity, recipient position
+- Extracts action items using LLM
+- Labels: critical, high, normal, low
+
+**Calendar Agent**:
+- Extracts events from meeting/reservation emails
+- Detects virtual meeting links (Zoom, Meet, Teams)
+- Conflict detection using Google Calendar FreeBusy API
+- Queues events for human approval if uncertain
+
+**Unsubscribe Agent**:
+- Header-based detection (RFC 2369, RFC 8058)
+- One-click, mailto, and HTTP link support
+- Batch review CLI with browser-based execution
+
+---
+
+## Phase 3: Prioritized Roadmap
+
+### Priority 1: Obsidian Knowledge Base Integration
 
 **Rationale**: Obsidian serves as a **context index for multi-agent reasoning**, not just a knowledge archive. When generating email replies, agents can retrieve relevant context from past conversations, contacts, and topics stored in Obsidian notes.
 
@@ -118,41 +153,7 @@ AI-generated summary of email content...
 
 ---
 
-### Priority 2: Importance Detection Agent
-
-**Rationale**: Prevents missed critical emails. Multi-factor scoring identifies urgency before categorization routing.
-
-#### Implementation Plan
-
-```python
-# src/agents/importance.py
-
-class ImportanceAgent:
-    """Multi-factor importance scoring."""
-
-    FACTORS = {
-        "sender_authority": 0.25,    # VIP contacts, managers
-        "urgency_keywords": 0.20,    # "urgent", "ASAP", "deadline"
-        "deadline_detection": 0.20,  # Date/time extraction
-        "financial_impact": 0.15,    # Money, contracts, invoices
-        "thread_activity": 0.10,     # Multiple replies = important
-        "recipient_count": 0.10,     # Direct vs CC'd
-    }
-
-    def score(self, email: EmailState) -> ImportanceResult:
-        # Returns: critical (>0.9), high (0.7-0.9), normal (0.4-0.7), low (<0.4)
-```
-
-**Workflow Integration**:
-```
-categorize → importance → [calendar | unsubscribe | obsidian]
-```
-
-**Reference**: [gmail_inbox_management_system.md](gmail_inbox_management_system.md) Section 3.3 (FR-IMP-001 through FR-IMP-005)
-
----
-
-### Priority 3: Draft Reply Generation
+### Priority 2: Draft Reply Generation
 
 **Rationale**: Highest user time-savings potential. Leverages Obsidian context for personalized, contextually-aware responses.
 
@@ -193,7 +194,7 @@ class ReplyAgent:
 
 ---
 
-### Priority 4: Active Learning from Feedback
+### Priority 3: Active Learning from Feedback
 
 **Rationale**: Improves accuracy over time. Requires research before implementation (see [ACTIVE_LEARNING_RESEARCH.md](ACTIVE_LEARNING_RESEARCH.md)).
 
@@ -214,46 +215,18 @@ class ReplyAgent:
 
 ---
 
-### Priority 5: Calendar Event Extraction
+### Priority 4: Future Enhancements
 
-**Rationale**: Automates event creation from reservation/meeting emails.
+#### Calendar Agent Enhancements
+- Recurring event detection and creation
+- All-day event support
+- Attendee invitation sending
+- Body-based event extraction (for emails without structured data)
 
-#### Implementation Plan
-
-```python
-# src/agents/calendar.py
-
-class CalendarAgent:
-    """Extract calendar events from emails."""
-
-    TRIGGERS = ["meeting", "appointment", "reservation", "flight", "hotel", "conference"]
-
-    def extract_event(self, email: EmailState) -> CalendarEvent | None:
-        # Returns: title, datetime, duration, location, attendees, virtual_link
-```
-
-**Reference**: [gmail_inbox_management_system.md](gmail_inbox_management_system.md) Section 3.5 (FR-CAL-001 through FR-CAL-005)
-
----
-
-### Priority 6: Unsubscribe Management
-
-**Rationale**: Bulk newsletter cleanup. Lower priority but high user satisfaction.
-
-#### Implementation Plan
-
-```python
-# src/agents/unsubscribe.py
-
-class UnsubscribeAgent:
-    """Detect and manage unsubscribe options."""
-
-    def detect_unsubscribe(self, email: EmailState) -> UnsubscribeMethod | None:
-        # Check: List-Unsubscribe header, mailto links, HTTP links
-        # Returns: method (one-click, mailto, http), url/email
-```
-
-**Reference**: [gmail_inbox_management_system.md](gmail_inbox_management_system.md) Section 3.4 (FR-UNSUB-001 through FR-UNSUB-005)
+#### Unsubscribe Agent Enhancements
+- Body-based link scanning (with low-confidence manual review)
+- Automated one-click unsubscribe execution (no browser confirmation)
+- Unsubscribe success verification
 
 ---
 
@@ -271,7 +244,7 @@ class UnsubscribeAgent:
 
 ```mermaid
 gantt
-    title Phase 2 Implementation Roadmap
+    title Phase 3 Implementation Roadmap
     dateFormat  YYYY-MM-DD
     section Priority 1
     Obsidian Agent Design     :a1, 2025-12-01, 3d
@@ -279,14 +252,11 @@ gantt
     Note Generation Logic     :a3, after a2, 3d
     Workflow Integration      :a4, after a3, 2d
     section Priority 2
-    Importance Scoring        :b1, after a4, 4d
-    Factor Weights Tuning     :b2, after b1, 2d
+    Reply Agent               :b1, after a4, 5d
+    Context Retrieval         :b2, after b1, 3d
     section Priority 3
-    Reply Agent               :c1, after b2, 5d
-    Context Retrieval         :c2, after c1, 3d
-    section Priority 4
-    Active Learning Research  :d1, 2025-12-01, 7d
-    Implementation            :d2, after c2, 5d
+    Active Learning Research  :c1, 2025-12-01, 7d
+    Implementation            :c2, after b2, 5d
 ```
 
 ---
@@ -322,19 +292,29 @@ gantt
 | [src/main.py](src/main.py) | FastAPI application |
 | [src/config.py](src/config.py) | Configuration and categories |
 | [src/agents/categorization.py](src/agents/categorization.py) | Categorization agent |
+| [src/agents/importance.py](src/agents/importance.py) | Importance scoring agent (Phase 2) |
+| [src/agents/calendar.py](src/agents/calendar.py) | Calendar extraction agent (Phase 2) |
+| [src/agents/unsubscribe.py](src/agents/unsubscribe.py) | Unsubscribe detection agent (Phase 2) |
 | [src/services/anthropic_client.py](src/services/anthropic_client.py) | Claude API client |
 | [src/services/gmail_client.py](src/services/gmail_client.py) | Gmail API client |
-| [src/workflows/email_processor.py](src/workflows/email_processor.py) | LangGraph workflow |
+| [src/services/google_calendar.py](src/services/google_calendar.py) | Google Calendar client (Phase 2) |
+| [src/workflows/email_processor.py](src/workflows/email_processor.py) | LangGraph multi-agent workflow |
+| [src/cli/unsubscribe.py](src/cli/unsubscribe.py) | Unsubscribe review CLI (Phase 2) |
 | [src/models/email.py](src/models/email.py) | Email database model |
+| [src/models/calendar_event.py](src/models/calendar_event.py) | Calendar event model (Phase 2) |
+| [src/models/vip_sender.py](src/models/vip_sender.py) | VIP sender model (Phase 2) |
 | [src/models/feedback.py](src/models/feedback.py) | Feedback model for active learning |
+| [config/vip_senders.yaml](config/vip_senders.yaml) | VIP sender configuration (Phase 2) |
 
 ---
 
-## Success Metrics (Phase 2)
+## Success Metrics (Phase 3)
 
 | Metric | Target | Measurement |
 |--------|--------|-------------|
 | Importance Detection | <5% false negatives | Track missed urgent emails |
+| Calendar Extraction | 90% accuracy on meeting emails | Compare extracted vs actual events |
+| Unsubscribe Detection | 95% header detection rate | Audit sample of newsletter emails |
 | Reply Draft Acceptance | 80% with minor edits | User feedback on drafts |
 | Obsidian Note Quality | Useful for context retrieval | Manual review of generated notes |
 | Active Learning | 5% accuracy improvement/month | Compare monthly categorization accuracy |
@@ -343,7 +323,8 @@ gantt
 
 ## Next Actions
 
-1. **Immediate**: Review 314 pending approvals via CLI to generate training data
-2. **This Week**: Design Obsidian note schema and file structure
-3. **Research**: Complete active learning research (see [ACTIVE_LEARNING_RESEARCH.md](ACTIVE_LEARNING_RESEARCH.md))
-4. **Development**: Begin Obsidian agent implementation
+1. **Immediate**: Run database migration `002_phase2_tables.sql` to create Phase 2 tables
+2. **Immediate**: Configure VIP senders in `config/vip_senders.yaml`
+3. **Test**: Deploy Phase 2 workflow and validate importance scoring on live emails
+4. **Review**: Process pending approvals via CLI to generate training data
+5. **Development**: Begin Obsidian agent implementation (Priority 1)

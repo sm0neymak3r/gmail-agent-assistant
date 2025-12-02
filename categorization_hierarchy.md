@@ -1,6 +1,6 @@
 # Email Categorization Hierarchy
 
-This document describes the email categorization system. **Phase 1 categories are currently implemented.**
+This document describes the email categorization system. **Phase 1 categorization and Phase 2 importance/specialized agents are implemented.**
 
 ## Phase 1: Current Categories
 
@@ -185,7 +185,137 @@ def classify_with_escalation(self, subject, from_email, body, categories, confid
 
 ---
 
-## Phase 2+: Future Enhancements
+## Phase 2: Importance Scoring (Implemented)
+
+After categorization, the Importance Agent scores each email using 6 weighted factors:
+
+```mermaid
+graph TD
+    subgraph ImportanceScoring["📊 Phase 2: Importance Scoring"]
+        EMAIL[Categorized Email] --> IMP_AGENT[Importance Agent<br/>Claude Haiku]
+
+        IMP_AGENT --> FACTORS[6-Factor Analysis]
+
+        FACTORS --> F1["Sender Authority (0.25)<br/>VIP list matching"]
+        FACTORS --> F2["Urgency Keywords (0.20)<br/>urgent, ASAP, deadline"]
+        FACTORS --> F3["Deadline Detection (0.20)<br/>Date/time patterns"]
+        FACTORS --> F4["Financial Signals (0.15)<br/>invoice, payment, $$$"]
+        FACTORS --> F5["Thread Activity (0.10)<br/>Gmail thread count"]
+        FACTORS --> F6["Recipient Position (0.10)<br/>TO vs CC"]
+
+        F1 --> SCORE[Weighted Score<br/>0.0 - 1.0]
+        F2 --> SCORE
+        F3 --> SCORE
+        F4 --> SCORE
+        F5 --> SCORE
+        F6 --> SCORE
+
+        SCORE --> LEVEL{Score Level}
+        LEVEL -->|"≥0.9"| CRITICAL[🚨 Critical]
+        LEVEL -->|"0.7-0.9"| HIGH[⚠️ High]
+        LEVEL -->|"0.4-0.7"| NORMAL[📧 Normal]
+        LEVEL -->|"<0.4"| LOW[📭 Low]
+    end
+
+    classDef agent fill:#4285F4,stroke:#1967D2,color:#fff
+    classDef factor fill:#34A853,stroke:#1E8E3E,color:#fff
+    classDef level fill:#FBBC04,stroke:#F9AB00,color:#000
+    classDef critical fill:#EA4335,stroke:#C5221F,color:#fff
+    classDef high fill:#FF6D01,stroke:#E65100,color:#fff
+
+    class IMP_AGENT agent
+    class F1,F2,F3,F4,F5,F6,SCORE factor
+    class LEVEL level
+    class CRITICAL critical
+    class HIGH high
+```
+
+### Importance Labels Applied
+
+| Level | Score Range | Gmail Label | Action |
+|-------|-------------|-------------|--------|
+| Critical | ≥ 0.9 | `Agent/Priority/Critical` | Immediate attention |
+| High | 0.7 - 0.9 | `Agent/Priority/High` | Prioritize today |
+| Normal | 0.4 - 0.7 | (none) | Standard processing |
+| Low | < 0.4 | (none) | FYI only |
+
+### Code Reference
+
+```python
+# src/agents/importance.py:89-156
+FACTOR_WEIGHTS = {
+    "sender_authority": 0.25,
+    "urgency_keywords": 0.20,
+    "deadline_detection": 0.20,
+    "financial_signals": 0.15,
+    "thread_activity": 0.10,
+    "recipient_position": 0.10,
+}
+```
+
+---
+
+## Phase 2: Specialized Agents (Implemented)
+
+### Calendar Agent
+
+Extracts calendar events from meeting/reservation emails:
+
+```mermaid
+flowchart LR
+    EMAIL[Email] --> TRIGGER{Calendar<br/>Keywords?}
+    TRIGGER -->|"meeting, reservation,<br/>flight, hotel"| CAL[Calendar Agent<br/>Claude Haiku]
+    TRIGGER -->|No| SKIP[Skip]
+
+    CAL --> EXTRACT[Extract Event]
+    EXTRACT --> CONFLICT{Check<br/>Conflicts}
+    CONFLICT -->|"FreeBusy API"| GCAL[Google Calendar]
+
+    CONFLICT --> QUEUE{Needs<br/>Approval?}
+    QUEUE -->|"Conflict or<br/>Low Confidence"| APPROVAL[(Human Review)]
+    QUEUE -->|"Clear"| AUTO[Auto-Queue]
+
+    classDef agent fill:#4285F4,stroke:#1967D2,color:#fff
+    classDef decision fill:#FBBC04,stroke:#F9AB00,color:#000
+
+    class CAL agent
+    class TRIGGER,CONFLICT,QUEUE decision
+```
+
+### Unsubscribe Agent
+
+Detects unsubscribe options for newsletters/marketing:
+
+```mermaid
+flowchart LR
+    EMAIL[Email] --> CAT{Category?}
+    CAT -->|"Newsletter or<br/>Marketing"| UNSUB[Unsubscribe Agent<br/>Header Parsing]
+    CAT -->|Other| SKIP[Skip]
+
+    UNSUB --> HEADERS{List-Unsubscribe<br/>Header?}
+    HEADERS -->|"RFC 2369"| DETECT[Detect Method]
+    HEADERS -->|None| NO_UNSUB[No Option Found]
+
+    DETECT --> M1[one-click<br/>RFC 8058]
+    DETECT --> M2[mailto<br/>Email-based]
+    DETECT --> M3[http<br/>Web link]
+
+    M1 --> QUEUE[(Unsubscribe Queue)]
+    M2 --> QUEUE
+    M3 --> QUEUE
+
+    classDef agent fill:#4285F4,stroke:#1967D2,color:#fff
+    classDef decision fill:#FBBC04,stroke:#F9AB00,color:#000
+    classDef method fill:#34A853,stroke:#1E8E3E,color:#fff
+
+    class UNSUB agent
+    class CAT,HEADERS decision
+    class M1,M2,M3 method
+```
+
+---
+
+## Phase 3+: Future Enhancements
 
 ### Dynamic Category Creation (Planned)
 

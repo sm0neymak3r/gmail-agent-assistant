@@ -1,0 +1,48 @@
+# VIP Senders Configuration
+# These senders receive an importance boost during email processing.
+#
+# Format:
+#   - pattern: Email pattern (exact match or wildcard with %)
+#     name: Human-readable name (optional)
+#     boost: Importance score boost (0.0 to 1.0, default 0.3)
+#
+# Examples:
+#   - pattern: "ceo@company.com"       # Exact match
+#   - pattern: "%@company.com"         # All emails from domain
+#   - pattern: "john.%@company.com"    # Pattern match
+#
+# Note: Patterns use SQL LIKE syntax where % matches any characters
+
+vip_senders:
+  # Family
+  - pattern: "martyghyman@gmail.com"
+    name: "Marty Hyman"
+    boost: 0.4
+
+  - pattern: "annmarie.skjold@gmail.com"
+    name: "Annmarie Skjold"
+    boost: 0.4
+
+  - pattern: "susanbkalla@gmail.com"
+    name: "Susan Kalla"
+    boost: 0.4
+
+  # Self
+  - pattern: "mspencerhyman@gmail.com"
+    name: "Self"
+    boost: 0.3
+
+# Domain-level VIPs (all emails from these domains get a boost)
+vip_domains:
+  # Recruiter platforms
+  - domain: "linkedin.com"
+    name: "LinkedIn"
+    boost: 0.25
+
+  - domain: "greenhouse.io"
+    name: "Greenhouse (Recruiting)"
+    boost: 0.25
+
+  - domain: "lever.co"
+    name: "Lever (Recruiting)"
+    boost: 0.25

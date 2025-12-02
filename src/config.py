@@ -67,6 +67,50 @@ class AnthropicConfig:
 
 
 @dataclass(frozen=True)
+class ImportanceConfig:
+    """Phase 2: Importance scoring configuration."""
+    # Factor weights (must sum to 1.0)
+    sender_authority_weight: float = 0.25
+    urgency_keywords_weight: float = 0.20
+    deadline_detection_weight: float = 0.20
+    financial_signals_weight: float = 0.15
+    thread_activity_weight: float = 0.10
+    recipient_position_weight: float = 0.10
+
+    # Thresholds for importance levels
+    critical_threshold: float = 0.9
+    high_threshold: float = 0.7
+    normal_threshold: float = 0.4  # Below this is "low"
+
+    # VIP configuration
+    vip_config_path: str = "config/vip_senders.yaml"
+    default_vip_boost: float = 0.3
+
+
+@dataclass(frozen=True)
+class CalendarConfig:
+    """Phase 2: Calendar integration configuration."""
+    enabled: bool = True
+    # Conflict detection buffer (minutes before/after event)
+    # Note: Currently 0, but structured for future configurability
+    conflict_buffer_minutes: int = 0
+    # Events longer than this require confirmation
+    max_auto_duration_hours: int = 2
+    # Minimum extraction confidence for auto-creation
+    min_extraction_confidence: float = 0.8
+
+
+@dataclass(frozen=True)
+class UnsubscribeConfig:
+    """Phase 2: Unsubscribe management configuration."""
+    # Only use header-based detection (more reliable)
+    # Body scanning is planned for future with low-confidence manual review
+    header_only: bool = True
+    # Categories that trigger unsubscribe detection
+    trigger_categories: tuple = ("Newsletters/Subscriptions", "Marketing/Promotions")
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Main application configuration."""
     project_id: str
@@ -78,6 +122,11 @@ class AppConfig:
     # Processing settings
     batch_size: int = 100
     confidence_threshold: float = 0.8  # Below this requires human approval
+
+    # Phase 2 settings
+    importance: ImportanceConfig = ImportanceConfig()
+    calendar: CalendarConfig = CalendarConfig()
+    unsubscribe: UnsubscribeConfig = UnsubscribeConfig()
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -94,6 +143,12 @@ class AppConfig:
             ),
             gmail=GmailConfig.from_env(),
             anthropic=AnthropicConfig.from_env(),
+            # Phase 2 configs use defaults, override via env if needed
+            importance=ImportanceConfig(),
+            calendar=CalendarConfig(
+                enabled=os.environ.get("CALENDAR_ENABLED", "true").lower() == "true",
+            ),
+            unsubscribe=UnsubscribeConfig(),
         )
 
 

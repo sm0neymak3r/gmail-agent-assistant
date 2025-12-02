@@ -125,6 +125,7 @@ response = client.messages.create(
 
 The database has these tables (see `infrastructure/REFERENCE.md` for full schema):
 
+### Phase 1 Tables
 | Table | Purpose |
 |-------|---------|
 | `emails` | Processed email storage |
@@ -133,6 +134,27 @@ The database has these tables (see `infrastructure/REFERENCE.md` for full schema
 | `importance_rules` | Learned classification rules |
 | `unsubscribe_queue` | Pending unsubscribe actions |
 | `processing_log` | Audit log for all actions |
+| `batch_jobs` | Batch processing job tracking |
+
+### Phase 2 Tables
+| Table | Purpose |
+|-------|---------|
+| `vip_senders` | VIP sender patterns for importance scoring |
+| `calendar_events` | Extracted calendar events pending review |
+
+### Phase 2 Agents
+
+| Agent | File | Purpose |
+|-------|------|---------|
+| Importance | `src/agents/importance.py` | 6-factor weighted scoring |
+| Calendar | `src/agents/calendar.py` | Event extraction + conflict detection |
+| Unsubscribe | `src/agents/unsubscribe.py` | Header-based unsubscribe detection |
+
+### Phase 2 Services
+
+| Service | File | Purpose |
+|---------|------|---------|
+| Google Calendar | `src/services/google_calendar.py` | FreeBusy API client |
 
 ## Common Tasks
 
@@ -234,10 +256,10 @@ After any significant work session, verify that diagrams reflect the actual impl
 All diagrams use phase indicators to distinguish implemented vs planned features:
 
 - **Phase 1** (✅): Currently implemented and tested
-- **Phase 2** (📋): Planned, not yet implemented
-- **Phase 3** (📋): Future enhancement
+- **Phase 2** (✅): Currently implemented and tested
+- **Phase 3** (📋): Planned, not yet implemented
 
-When implementing Phase 2/3 features, move them from "planned" to "implemented" sections.
+When implementing Phase 3 features, move them from "planned" to "implemented" sections.
 
 ### Keeping Diagrams in Sync
 

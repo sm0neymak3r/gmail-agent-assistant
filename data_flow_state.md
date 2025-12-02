@@ -1,6 +1,6 @@
 # Data Flow & State Management
 
-This document describes data flow and state management. **Phase 1 is currently implemented**; Phase 2/3 components are shown in gray.
+This document describes data flow and state management. **Phase 1 and Phase 2 are implemented**; Phase 3 components are shown in gray.
 
 ## Phase 1: Current Implementation
 
@@ -238,15 +238,21 @@ if existing.scalar_one_or_none():
     return {"status": "already_processed", "message_id": email_msg.message_id}
 ```
 
-## Data Enrichment Timeline (Phase 1)
+## Data Enrichment Timeline (Phase 1 + Phase 2)
 
 ```
-Fetch:        {email_id, message_id, from, to, subject, body, date}
+Fetch:        {email_id, message_id, from, to, subject, body, date, headers}
                 ↓
 Categorize:   + category, confidence, reasoning
                 ↓
-Route:        → labeled (confidence ≥ 0.8)
-              → pending_approval (confidence < 0.8)
+Importance:   + importance_level, importance_score, action_items  [Phase 2]
+                ↓
+Calendar:     + calendar_event, calendar_conflicts  [Phase 2, conditional]
+                ↓
+Unsubscribe:  + unsubscribe_method, unsubscribe_url  [Phase 2, conditional]
+                ↓
+Route:        → labeled (confidence ≥ 0.8 and no conflicts)
+              → pending_approval (confidence < 0.8 or conflicts)
 ```
 
 ## Future: Feedback Loop for Continuous Learning (Phase 2+)
@@ -280,15 +286,55 @@ flowchart LR
 
 ---
 
-## Phase 2/3: Future Data Flow Additions
+## Phase 2: Implemented Data Flow Additions
+
+| Component | Data Flow | Status |
+|-----------|-----------|--------|
+| Importance Agent | `+ importance_level, importance_score, importance_factors, action_items` | ✅ Implemented |
+| Calendar Agent | `+ calendar_event{}, calendar_conflicts[], calendar_action` | ✅ Implemented |
+| Unsubscribe Agent | `+ unsubscribe_method, unsubscribe_url, unsubscribe_email` | ✅ Implemented |
+| VIP Sender Config | `config/vip_senders.yaml` for importance scoring | ✅ Implemented |
+
+### Phase 2 State Fields
+
+```python
+# src/workflows/state.py - Phase 2 additions
+
+# Importance
+importance_level: Literal["critical", "high", "normal", "low"]
+importance_score: float  # 0.0 - 1.0
+importance_factors: dict[str, float]  # Individual factor scores
+action_items: list[str]  # Extracted action items
+
+# Calendar
+calendar_event: Optional[dict]  # Extracted event details
+calendar_conflicts: list[dict]  # Conflicting events
+calendar_action: Literal["extracted", "conflict", "skipped", "no_event"]
+
+# Unsubscribe
+unsubscribe_available: bool
+unsubscribe_method: Optional[Literal["one-click", "mailto", "http", "none"]]
+unsubscribe_url: Optional[str]
+unsubscribe_email: Optional[str]
+unsubscribe_queued: bool
+```
+
+### Phase 2 Database Tables
+
+| Table | Purpose |
+|-------|---------|
+| `vip_senders` | VIP sender patterns for importance scoring |
+| `calendar_events` | Extracted calendar events pending review |
+| `unsubscribe_queue` | Unsubscribe recommendations (updated with sender_domain, confidence) |
+
+---
+
+## Phase 3: Future Data Flow Additions
 
 The following components are planned but not yet implemented:
 
 | Component | Data Flow | Phase |
 |-----------|-----------|-------|
-| Redis Cache | LLM response caching (TTL: 24h) | Phase 2 |
-| Importance Agent | `+ importance_level, score, action_items` | Phase 2 |
-| Calendar Agent | `+ calendar_event{}` | Phase 2 |
-| Unsubscribe Agent | `+ unsubscribe_method, url` | Phase 2 |
-| Obsidian Agent | `+ note_path` | Phase 3 |
+| Redis Cache | LLM response caching (TTL: 24h) | Phase 3 |
+| Obsidian Agent | `+ obsidian_note_path` | Phase 3 |
 | Reply Agent | `+ draft_reply` | Phase 3 |

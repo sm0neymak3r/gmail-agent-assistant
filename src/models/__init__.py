@@ -8,6 +8,8 @@ from src.models.importance_rule import ImportanceRule
 from src.models.unsubscribe_queue import UnsubscribeQueue
 from src.models.processing_log import ProcessingLog
 from src.models.batch_job import BatchJob
+from src.models.calendar_event import CalendarEvent
+from src.models.vip_sender import VIPSender
 
 __all__ = [
     "Base",
@@ -22,4 +24,6 @@ __all__ = [
     "UnsubscribeQueue",
     "ProcessingLog",
     "BatchJob",
+    "CalendarEvent",
+    "VIPSender",
 ]

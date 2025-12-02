@@ -14,6 +14,9 @@ class EmailState(TypedDict, total=False):
 
     This state is passed between LangGraph nodes and checkpointed
     for crash recovery.
+
+    Phase 1: Basic categorization with confidence-based routing
+    Phase 2: Importance scoring, calendar extraction, unsubscribe detection
     """
     # Email identifiers
     email_id: str
@@ -35,13 +38,15 @@ class EmailState(TypedDict, total=False):
         "fetched",
         "categorized",
         "importance_checked",
+        "calendar_checked",
+        "unsubscribe_checked",
         "labeled",
         "pending_approval",
         "completed",
         "failed",
     ]
 
-    # Classification results
+    # Classification results (Phase 1)
     category: str
     confidence: float
     reasoning: str
@@ -49,7 +54,20 @@ class EmailState(TypedDict, total=False):
     # Importance detection (Phase 2)
     importance_level: Literal["critical", "high", "normal", "low"]
     importance_score: float
-    action_items: list[dict]
+    importance_factors: dict[str, float]  # Individual factor scores for debugging
+    action_items: list[str]  # Extracted action items from email
+
+    # Calendar extraction (Phase 2)
+    calendar_event: Optional[dict]  # Extracted event: {title, start, end, location, ...}
+    calendar_conflicts: list[dict]  # Conflicting existing events
+    calendar_action: Literal["extracted", "conflict", "skipped", "no_event"]
+
+    # Unsubscribe detection (Phase 2)
+    unsubscribe_available: bool
+    unsubscribe_method: Optional[Literal["one-click", "mailto", "http", "none"]]
+    unsubscribe_url: Optional[str]
+    unsubscribe_email: Optional[str]
+    unsubscribe_queued: bool
 
     # Human approval
     needs_human_approval: bool
@@ -111,16 +129,32 @@ def create_initial_state(
         snippet=snippet,
         labels=labels or [],
         processing_step="fetched",
+        # Phase 1: Categorization
         category="",
         confidence=0.0,
         reasoning="",
+        # Phase 2: Importance
         importance_level="normal",
         importance_score=0.5,
+        importance_factors={},
         action_items=[],
+        # Phase 2: Calendar
+        calendar_event=None,
+        calendar_conflicts=[],
+        calendar_action="no_event",
+        # Phase 2: Unsubscribe
+        unsubscribe_available=False,
+        unsubscribe_method=None,
+        unsubscribe_url=None,
+        unsubscribe_email=None,
+        unsubscribe_queued=False,
+        # Human approval
         needs_human_approval=False,
         approval_type="categorization",
+        # Error handling
         error=None,
         retry_count=0,
+        # Timestamps
         fetched_at=datetime.utcnow().isoformat(),
         processed_at="",
         messages=[],

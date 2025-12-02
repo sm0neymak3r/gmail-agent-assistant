@@ -28,7 +28,7 @@ gmail-agent-assistant/
 
 ## Current Status
 
-### Completed
+### Phase 1: Completed
 - [x] GCP project setup (`gmail-agent-prod`)
 - [x] Terraform infrastructure deployed (dev environment)
   - Cloud Run service with application deployed (v12)
@@ -51,9 +51,27 @@ gmail-agent-assistant/
   - Database-level locking for concurrency protection
   - Automatic retry with exponential backoff
   - Progress tracking and pause/resume support
+- [x] Historical processing complete (464,757 emails)
+
+### Phase 2: Completed
+- [x] Importance Agent with 6-factor weighted scoring
+  - Sender authority (VIP list), urgency keywords, deadline detection
+  - Financial signals, thread activity, recipient position
+  - LLM-based action item extraction
+- [x] Calendar Agent with Google Calendar integration
+  - LLM-based event extraction from meeting/reservation emails
+  - Virtual meeting link detection (Zoom, Meet, Teams)
+  - FreeBusy API conflict detection
+- [x] Unsubscribe Agent with RFC 2369/8058 support
+  - List-Unsubscribe header parsing
+  - One-click, mailto, and HTTP link detection
+  - CLI for batch review and browser-based execution
+- [x] Multi-agent workflow with conditional routing
+- [x] Phase 2 database migrations
+- [x] VIP sender configuration (config/vip_senders.yaml)
 
 ### In Progress
-- [ ] Processing full inbox (~65,000 emails)
+- [ ] Deploy and test Phase 2 workflow on live emails
 
 ## Next Steps
 
@@ -134,17 +152,23 @@ export DATABASE_PASSWORD=$(gcloud secrets versions access latest --secret="db-pa
 python -m src.cli.approval
 ```
 
-### 5. Phase 2 Features (Future)
-- [ ] Importance detection agent
-- [ ] Calendar event extraction
-- [ ] Unsubscribe management
-- [ ] Active learning from feedback
+### 5. Use Unsubscribe CLI
+```bash
+# Set up SSH tunnel through bastion
+gcloud compute ssh gmail-agent-bastion-dev \
+  --zone=us-central1-a \
+  --tunnel-through-iap \
+  -- -L 5432:<DB_PRIVATE_IP>:5432 -N &
+
+# Run unsubscribe CLI for batch review
+python -m src.cli.unsubscribe
+```
 
 ### 6. Phase 3 Features (Future)
 - [ ] Obsidian knowledge base integration
 - [ ] Draft reply generation
 - [ ] Dynamic category creation
-- [ ] Batch CLI operations
+- [ ] Active learning from feedback
 
 ### 7. Production Readiness
 - [ ] Enable Cloud SQL deletion protection
@@ -285,6 +309,15 @@ The application has access to these environment variables in Cloud Run:
 | Newsletters/Subscriptions | Newsletter emails |
 | Marketing/Promotions | Promotional emails |
 
+## Importance Levels (Phase 2)
+
+| Level | Score Range | Gmail Label | Description |
+|-------|-------------|-------------|-------------|
+| Critical | ≥ 0.9 | `Agent/Priority/Critical` | Immediate attention needed |
+| High | 0.7 - 0.9 | `Agent/Priority/High` | Prioritize today |
+| Normal | 0.4 - 0.7 | (none) | Standard processing |
+| Low | < 0.4 | (none) | FYI, newsletters |
+
 ## Documentation
 
 - [Infrastructure README](infrastructure/README.md) - Deployment and operations guide
@@ -312,15 +345,18 @@ The application has access to these environment variables in Cloud Run:
                         └─────────────────┘
 ```
 
-### Processing Flow (Hourly)
+### Processing Flow (Hourly) - Phase 2 Multi-Agent
 
 1. **Cloud Scheduler** triggers `/process` endpoint hourly
 2. **Gmail Client** fetches unread emails (batch of 100)
 3. **Categorization Agent** classifies using Claude Haiku (fast) with escalation to Sonnet (quality)
-4. High-confidence emails get **labeled automatically** in Gmail
-5. Low-confidence emails go to **approval queue** in PostgreSQL
-6. **CLI or API** allows human review and correction
-7. **Feedback** stored for future model improvement
+4. **Importance Agent** scores using 6-factor weighted analysis, extracts action items
+5. **Calendar Agent** (conditional) extracts events from meeting/reservation emails, checks conflicts
+6. **Unsubscribe Agent** (conditional) detects unsubscribe options for newsletters/marketing
+7. High-confidence emails get **labeled automatically** in Gmail (category + priority)
+8. Low-confidence or conflicting emails go to **approval queue** in PostgreSQL
+9. **CLI or API** allows human review and correction
+10. **Feedback** stored for future model improvement
 
 ### Batch Processing Flow (Full Inbox)
 

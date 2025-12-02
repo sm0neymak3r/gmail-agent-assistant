@@ -5,13 +5,13 @@
 
 ## **Implementation Status Summary**
 
-> **Last Updated**: November 2025
+> **Last Updated**: December 2025
 
 | Phase | Status | Progress |
 |-------|--------|----------|
 | Phase 1: MVP | ✅ Complete | 100% |
-| Historical Processing | 🔄 In Progress | ~47% (32/67 chunks) |
-| Phase 2: Enhanced Intelligence | 📋 Planned | 0% |
+| Historical Processing | ✅ Complete | 464,757 emails processed |
+| Phase 2: Enhanced Intelligence | ✅ Complete | 100% |
 | Phase 3: Knowledge Management | 📋 Planned | 0% |
 | Phase 4: Real-Time Processing | 📋 Planned | 0% |
 
@@ -25,9 +25,20 @@
 - [x] Idempotency (no duplicate processing)
 - [x] Cloud Scheduler hourly trigger
 
+### Phase 2 Completed Components
+- [x] Importance Agent with 6-factor weighted scoring
+- [x] Calendar Agent with Google Calendar FreeBusy conflict detection
+- [x] Unsubscribe Agent with RFC 2369/8058 header parsing
+- [x] VIP sender configuration (config/vip_senders.yaml)
+- [x] Unsubscribe CLI for batch review
+- [x] Multi-agent workflow with conditional routing
+- [x] Phase 2 database migrations
+
 ### Key Metrics (Current)
-- **Emails Categorized**: ~7,200+ (and counting)
-- **Processing Rate**: ~500 emails per 2-month chunk
+- **Emails Processed**: 464,757 (11 years of inbox)
+- **Emails Categorized**: 24,679
+- **Success Rate**: 99.2%
+- **Total Cost**: $576.30
 - **Infrastructure Cost**: ~$30-50/month (Cloud Run, Cloud SQL, NAT)
 
 ---
@@ -190,13 +201,13 @@ Transform Gmail from a reactive inbox into an intelligent, automated workspace a
 
 **Agents:**
 1. ✅ Categorization Agent: Email → Category + Confidence (Phase 1)
-2. 📋 Importance Agent: Email → Priority + Action Items (Phase 2)
-3. 📋 Calendar Agent: Email → Event Details (Phase 2)
-4. 📋 Unsubscribe Agent: Email → Recommendation (Phase 2)
+2. ✅ Importance Agent: Email → Priority + Action Items (Phase 2)
+3. ✅ Calendar Agent: Email → Event Details (Phase 2)
+4. ✅ Unsubscribe Agent: Email → Recommendation (Phase 2)
 5. 📋 Reply Agent: Email → Draft Response (Phase 3)
 6. 📋 Obsidian Agent: Email → Knowledge Base Entry (Phase 3)
 
-**Orchestration:** LangGraph StateGraph with conditional routing ✅ Implemented
+**Orchestration:** LangGraph StateGraph with conditional routing ✅ Implemented (Phase 2 multi-agent)
 
 ---
 
@@ -1413,15 +1424,17 @@ categories:
 - [x] Implement historical email processing (Cloud Tasks batch)
 - [x] Add basic monitoring and logging
 
-### **Phase 2: Enhanced Intelligence (Weeks 5-8)** 📋 PLANNED
-- [ ] Implement importance detection agent
-- [ ] Add action item extraction
-- [ ] Build calendar event creation agent
-- [ ] Implement unsubscribe detection and management
+### **Phase 2: Enhanced Intelligence (Weeks 5-8)** ✅ COMPLETE
+- [x] Implement importance detection agent (6-factor weighted scoring)
+- [x] Add action item extraction (LLM-based)
+- [x] Build calendar event creation agent (Google Calendar FreeBusy API)
+- [x] Implement unsubscribe detection and management (RFC 2369/8058)
 - [x] Add tiered model usage (Claude Haiku + Claude Sonnet) ✅ Done in Phase 1
-- [ ] Implement feedback loop and active learning
-- [ ] Add Redis caching for LLM responses
-- [ ] Create monitoring dashboard
+- [x] Multi-agent workflow with conditional routing
+- [x] Unsubscribe CLI for batch review
+- [ ] Implement feedback loop and active learning (Phase 3)
+- [ ] Add Redis caching for LLM responses (Phase 3)
+- [ ] Create monitoring dashboard (Phase 3)
 
 ### **Phase 3: Knowledge Management (Weeks 9-12)** 📋 PLANNED
 - [ ] Implement Obsidian agent with note creation
